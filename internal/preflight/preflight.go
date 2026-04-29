@@ -1,70 +1,98 @@
 // Package preflight runs environmental checks before xray-aio touches the
-// system: distro detection, kernel version, free TCP/UDP ports, IPv4/IPv6
-// reachability, DNS sanity. Phase 0 ships interfaces and a stub Run() that
-// only exercises distro detection.
+// system: distro/arch detection, kernel version + BBR availability, free
+// TCP/UDP ports, IPv4/IPv6 reachability, DNS resolver sanity.
+//
+// Each individual check produces a [Check] entry with one of the
+// statuses [StatusOK], [StatusWarn], [StatusError]. [Run] aggregates all
+// of them into a [Result]; the orchestrator decides whether to proceed
+// based on Result.HasErrors().
 package preflight
 
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
 	"runtime"
-	"strings"
+	"sort"
 )
 
-// Result aggregates all preflight findings. Phase 0 only fills Distro.
-type Result struct {
-	OS         string
-	Arch       string
-	Distro     string
-	DistroName string
-	Warnings   []string
-	Errors     []string
+// Status is the outcome of a single check.
+type Status string
+
+const (
+	StatusOK    Status = "ok"
+	StatusWarn  Status = "warn"
+	StatusError Status = "error"
+)
+
+// Check is a single named check result.
+type Check struct {
+	Name    string
+	Status  Status
+	Message string
 }
 
-// Ok reports whether preflight passed without hard errors.
-func (r Result) Ok() bool { return len(r.Errors) == 0 }
+// Result aggregates all checks executed by Run.
+type Result struct {
+	OS     string
+	Arch   string
+	Checks []Check
+}
 
-// Run executes all checks. Currently a placeholder — fleshed out in Phase 1.
-func Run(_ context.Context) (Result, error) {
+// HasErrors reports whether at least one check failed with [StatusError].
+func (r Result) HasErrors() bool {
+	for _, c := range r.Checks {
+		if c.Status == StatusError {
+			return true
+		}
+	}
+	return false
+}
+
+// HasWarnings reports whether at least one check produced [StatusWarn].
+func (r Result) HasWarnings() bool {
+	for _, c := range r.Checks {
+		if c.Status == StatusWarn {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckFunc is a single preflight probe.
+type CheckFunc func(ctx context.Context) Check
+
+// defaultChecks is the suite executed by Run. Tests override it via
+// [setChecksForTest].
+var defaultChecks = []CheckFunc{
+	checkOS,
+	checkDistro,
+	checkKernel,
+	checkBBR,
+	checkPort80,
+	checkPort443TCP,
+	checkPort443UDP,
+	checkIPv4,
+	checkIPv6,
+	checkDNS,
+}
+
+// Run executes the standard preflight suite.
+func Run(ctx context.Context) (Result, error) {
 	r := Result{OS: runtime.GOOS, Arch: runtime.GOARCH}
-	if r.OS != "linux" {
-		r.Errors = append(r.Errors, fmt.Sprintf("unsupported OS: %s (only linux)", r.OS))
+	for _, fn := range defaultChecks {
+		r.Checks = append(r.Checks, fn(ctx))
 	}
-	d, name, err := detectDistro()
-	if err != nil {
-		r.Warnings = append(r.Warnings, "distro detection failed: "+err.Error())
-	} else {
-		r.Distro, r.DistroName = d, name
-	}
-	if !r.Ok() {
+	sort.SliceStable(r.Checks, func(i, j int) bool { return r.Checks[i].Name < r.Checks[j].Name })
+	if r.HasErrors() {
 		return r, errors.New("preflight failed")
 	}
 	return r, nil
 }
 
-// detectDistro parses /etc/os-release and returns ID + PRETTY_NAME.
-func detectDistro() (id, pretty string, err error) {
-	b, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return "", "", err
+// checkOS is a non-IO check that fails on non-linux hosts.
+func checkOS(_ context.Context) Check {
+	if runtime.GOOS != "linux" {
+		return Check{Name: "os", Status: StatusError, Message: "unsupported OS: " + runtime.GOOS + " (only linux is supported)"}
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		v = strings.Trim(v, `"`)
-		switch k {
-		case "ID":
-			id = v
-		case "PRETTY_NAME":
-			pretty = v
-		}
-	}
-	if id == "" {
-		return "", "", errors.New("ID= not found in /etc/os-release")
-	}
-	return id, pretty, nil
+	return Check{Name: "os", Status: StatusOK, Message: runtime.GOOS + "/" + runtime.GOARCH}
 }
