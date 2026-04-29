@@ -20,6 +20,10 @@ import (
 	"github.com/vmhlov/xray-aio/internal/state"
 	"github.com/vmhlov/xray-aio/internal/transport"
 	"github.com/vmhlov/xray-aio/internal/version"
+
+	// Side-effect imports: each package's init() registers its
+	// transport in the global transport registry.
+	_ "github.com/vmhlov/xray-aio/internal/transport/xray"
 )
 
 func main() {
