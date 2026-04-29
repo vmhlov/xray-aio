@@ -34,11 +34,16 @@ var ErrNotFound = errors.New("subscribe: not found")
 //
 // The handler verifies the HMAC tag before calling the resolver, so a
 // hostile caller can't enumerate clients by hammering ids.
+//
+// The secret-length check matches [VerifyToken]'s lower bound so an
+// undersized secret can never be silently swallowed (every request
+// would 404 because VerifyToken returns "secret too short", giving
+// the operator no useful signal).
 func Handler(secret []byte, r BundleResolver) http.Handler {
-	if len(secret) == 0 || r == nil {
+	if len(secret) < SecretBytes/2 || r == nil {
 		// Programmer error — fail loudly at construction time
 		// rather than serving an open endpoint.
-		panic("subscribe.Handler: secret and resolver are required")
+		panic("subscribe.Handler: secret (>= SecretBytes/2 bytes) and resolver are required")
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(PathPrefix, func(w http.ResponseWriter, req *http.Request) {

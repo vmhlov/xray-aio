@@ -123,9 +123,14 @@ func TestNaiveURI(t *testing.T) {
 	if !strings.Contains(u, "alice:") {
 		t.Errorf("username missing: %s", u)
 	}
-	// Password contains '@' and space — must be percent-encoded.
-	if !strings.Contains(u, "p%40ss+word") && !strings.Contains(u, "p%40ss%20word") {
-		t.Errorf("password not percent-encoded: %s", u)
+	// Password contains '@' and a space. Per RFC 3986 the userinfo
+	// space MUST be %20 (not '+', which is form-encoding only).
+	// Devin Review caught QueryEscape silently producing '+' here.
+	if !strings.Contains(u, "p%40ss%20word") {
+		t.Errorf("password not RFC 3986 userinfo-encoded: %s", u)
+	}
+	if strings.Contains(u, "p%40ss+word") {
+		t.Errorf("password contains '+' (form-encoding) — must be %%20: %s", u)
 	}
 	if !strings.Contains(u, "@example.com:443") {
 		t.Errorf("host segment: %s", u)

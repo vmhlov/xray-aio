@@ -97,6 +97,12 @@ type NaiveConfig struct {
 // the upstream naive client and the NekoBox importer. Padding=true is
 // appended because the server is QUIC-capable and clients benefit
 // from the random padding.
+//
+// Userinfo (Username and Password) is escaped via [url.URL] /
+// [url.UserPassword] which apply the RFC 3986 userinfo character set
+// — spaces become '%20' (not '+', which is form-encoding only) and
+// the userinfo/host delimiter '@' is properly percent-encoded so a
+// password containing '@' can't smuggle into the host portion.
 func NaiveURI(c NaiveConfig) (string, error) {
 	if c.Username == "" || c.Password == "" {
 		return "", errors.New("Username and Password are required")
@@ -107,11 +113,14 @@ func NaiveURI(c NaiveConfig) (string, error) {
 	if c.Port <= 0 || c.Port > 65535 {
 		return "", fmt.Errorf("Port %d out of range", c.Port)
 	}
-	userInfo := url.QueryEscape(c.Username) + ":" + url.QueryEscape(c.Password)
-	host := c.Domain + ":" + strconv.Itoa(c.Port)
-	out := "naive+https://" + userInfo + "@" + host + "?padding=true"
-	if c.Label != "" {
-		out += "#" + url.PathEscape(c.Label)
+	u := &url.URL{
+		Scheme:   "naive+https",
+		User:     url.UserPassword(c.Username, c.Password),
+		Host:     c.Domain + ":" + strconv.Itoa(c.Port),
+		RawQuery: "padding=true",
 	}
-	return out, nil
+	if c.Label != "" {
+		u.Fragment = c.Label
+	}
+	return u.String(), nil
 }

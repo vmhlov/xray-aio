@@ -154,6 +154,21 @@ func TestHandlerPanicsOnNilSecretOrResolver(t *testing.T) {
 	Handler(nil, nil)
 }
 
+// TestHandlerPanicsOnShortSecret pins the constructor's lower bound
+// to VerifyToken's. Caught by Devin Review on PR #7: a 1–15 byte
+// secret would pass an len==0 check but make every subsequent
+// VerifyToken silently fail, returning 404 for all valid tokens
+// without an operator-visible signal.
+func TestHandlerPanicsOnShortSecret(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic on undersized secret")
+		}
+	}()
+	short := make([]byte, SecretBytes/2-1)
+	Handler(short, MapResolver{})
+}
+
 func TestMapResolver(t *testing.T) {
 	r := MapResolver{"alice": Bundle{VLESSURIs: []string{"x"}}}
 	got, err := r.Resolve("alice")
