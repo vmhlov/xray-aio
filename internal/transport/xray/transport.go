@@ -2,9 +2,11 @@ package xray
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"time"
 
@@ -68,20 +70,52 @@ func (t *transportImpl) Status(ctx context.Context) (transport.Status, error) {
 }
 
 // Probe runs a TCP-connect health check against the local listener.
+// The port is read back from the on-disk config so we hit the actual
+// configured listener (which may differ from [DefaultListenPort]). On
+// any read/parse failure we fall back to [DefaultListenPort] and surface
+// the issue in Notes — that way Probe never panics on a partially
+// installed system.
+//
 // A successful connect means systemd is at least carrying the port
 // open; deep TLS/REALITY validation lands in a later phase.
 func (t *transportImpl) Probe(ctx context.Context) (transport.ProbeResult, error) {
-	port := DefaultListenPort
+	port, portErr := t.readConfiguredPort()
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	start := time.Now()
 	d := net.Dialer{Timeout: 2 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	latency := time.Since(start).Milliseconds()
+	notesPrefix := ""
+	if portErr != nil {
+		notesPrefix = "config unreadable (" + portErr.Error() + "); fell back to default port. "
+	}
 	if err != nil {
-		return transport.ProbeResult{OK: false, Latency: latency, Notes: err.Error()}, nil
+		return transport.ProbeResult{OK: false, Latency: latency, Notes: notesPrefix + err.Error()}, nil
 	}
 	_ = conn.Close()
-	return transport.ProbeResult{OK: true, Latency: latency, Notes: "tcp connect ok on " + addr}, nil
+	return transport.ProbeResult{OK: true, Latency: latency, Notes: notesPrefix + "tcp connect ok on " + addr}, nil
+}
+
+// readConfiguredPort returns the listen port from the persisted Xray
+// config on disk. Returns [DefaultListenPort] plus an explanatory error
+// when the config can't be read or parsed.
+func (t *transportImpl) readConfiguredPort() (int, error) {
+	body, err := os.ReadFile(t.mgr.Paths.Config)
+	if err != nil {
+		return DefaultListenPort, err
+	}
+	var doc struct {
+		Inbounds []struct {
+			Port int `json:"port"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return DefaultListenPort, err
+	}
+	if len(doc.Inbounds) == 0 || doc.Inbounds[0].Port <= 0 {
+		return DefaultListenPort, errors.New("inbound port missing in config")
+	}
+	return doc.Inbounds[0].Port, nil
 }
 
 // Uninstall stops the unit and removes config + binary stays.

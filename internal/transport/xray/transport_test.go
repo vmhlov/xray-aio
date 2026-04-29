@@ -2,7 +2,11 @@ package xray
 
 import (
 	"context"
+	"net"
+	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/vmhlov/xray-aio/internal/transport"
@@ -132,5 +136,58 @@ func TestProbeUnreachable(t *testing.T) {
 	}
 	if res.Notes == "" {
 		t.Fatal("Probe.Notes empty")
+	}
+}
+
+func TestProbeReadsConfiguredPort(t *testing.T) {
+	// Bring up a local listener on an arbitrary port, write a config
+	// file pointing at that port, point a transportImpl at it, and
+	// assert Probe both reports OK and includes the chosen port in
+	// its Notes — proving Probe is no longer hardcoded to 443.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	cfg := validConfig(t)
+	cfg.ListenPort = port
+	rendered, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	cfgPath := dir + "/config.json"
+	if err := os.WriteFile(cfgPath, []byte(rendered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	impl := &transportImpl{mgr: &Manager{Paths: Paths{Config: cfgPath}}}
+
+	res, err := impl.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("Probe should have connected: %+v", res)
+	}
+	wantSubstr := strconv.Itoa(port)
+	if !strings.Contains(res.Notes, wantSubstr) {
+		t.Fatalf("Probe didn't dial configured port %d: notes=%q", port, res.Notes)
+	}
+}
+
+func TestProbeFallsBackWhenConfigMissing(t *testing.T) {
+	impl := &transportImpl{mgr: &Manager{Paths: Paths{Config: "/nonexistent/xray-config.json"}}}
+	res, err := impl.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	// Whether 127.0.0.1:443 is reachable on the test host is
+	// irrelevant — what we assert is that the fallback path was
+	// taken and surfaced in Notes.
+	if !strings.Contains(res.Notes, "config unreadable") {
+		t.Fatalf("expected fallback in Notes, got: %q", res.Notes)
 	}
 }
