@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,9 +17,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/vmhlov/xray-aio/internal/log"
+	"github.com/vmhlov/xray-aio/internal/orchestrator"
 	"github.com/vmhlov/xray-aio/internal/preflight"
-	"github.com/vmhlov/xray-aio/internal/state"
-	"github.com/vmhlov/xray-aio/internal/transport"
 	"github.com/vmhlov/xray-aio/internal/version"
 
 	// Side-effect imports: each package's init() registers its
@@ -59,25 +59,50 @@ func newRootCmd() *cobra.Command {
 }
 
 func newInstallCmd() *cobra.Command {
-	var (
-		profile string
-		domain  string
-		email   string
-	)
+	opts := orchestrator.InstallOptions{}
 	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Install one of the predefined profiles on this host",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			log.L().Info("install requested", "profile", profile, "domain", domain)
-			fmt.Fprintln(cmd.OutOrStdout(), "install: not implemented yet (Phase 0 skeleton)")
-			fmt.Fprintln(cmd.OutOrStdout(), "available transports:", transport.Names())
+			if opts.Domain == "" {
+				return fmt.Errorf("--domain is required")
+			}
+			log.L().Info("install requested", "profile", opts.Profile, "domain", opts.Domain)
+			res, err := orchestrator.Install(cmd.Context(), opts, orchestrator.Deps{})
+			if err != nil {
+				return err
+			}
+			printInstallResult(cmd.OutOrStdout(), res)
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&profile, "profile", "home-stealth", "preset profile (home-stealth|home-mobile|home-cdn|bridge-ru-eu|paranoid)")
-	cmd.Flags().StringVar(&domain, "domain", "", "domain name for selfsteal/ACME (required for most transports)")
-	cmd.Flags().StringVar(&email, "email", "", "email for Let's Encrypt registration")
+	cmd.Flags().StringVar(&opts.Profile, "profile", "home-stealth", "preset profile (home-stealth)")
+	cmd.Flags().StringVar(&opts.Domain, "domain", "", "domain name clients use to reach this host (required)")
+	cmd.Flags().StringVar(&opts.Email, "email", "", "email for Let's Encrypt registration (recommended)")
+	cmd.Flags().IntVar(&opts.XrayPort, "xray-port", 0, "override Xray REALITY listen port (default 443)")
+	cmd.Flags().IntVar(&opts.NaivePort, "naive-port", 0, "override Naive listen port (default 8444)")
+	cmd.Flags().StringVar(&opts.XrayDest, "xray-dest", "", "override REALITY upstream destination (default 127.0.0.1:8443)")
+	cmd.Flags().StringVar(&opts.NaiveSiteRoot, "naive-site-root", "", "override Naive Caddy file_server root (subscriptions land under <root>/sub/<token>/)")
+	cmd.Flags().BoolVar(&opts.SkipPreflightOnError, "skip-preflight-errors", false, "proceed even if preflight reports errors (advanced)")
 	return cmd
+}
+
+func printInstallResult(w io.Writer, r *orchestrator.InstallResult) {
+	if r == nil {
+		return
+	}
+	if r.State != nil {
+		fmt.Fprintf(w, "profile: %s\n", r.State.Profile)
+		fmt.Fprintf(w, "domain:  %s\n", r.State.Domain)
+	}
+	if r.SubscriptionURL != "" {
+		fmt.Fprintf(w, "\nsubscription URL (give to client):\n  %s\n", r.SubscriptionURL)
+	}
+	if r.BundleDir != "" {
+		fmt.Fprintf(w, "bundle written: %s\n", r.BundleDir)
+	}
+	fmt.Fprintln(w, "\nphase 1.6 reminder: REALITY upstream (127.0.0.1:8443) is not auto-installed yet.")
+	fmt.Fprintln(w, "phase 1.7 will add a unified selfsteal+naive Caddy. For now operator should run something on :8443 for full stealth.")
 }
 
 func newStatusCmd() *cobra.Command {
@@ -85,14 +110,37 @@ func newStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show installed transports and their health",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			s, err := state.Load()
+			r, err := orchestrator.Status(cmd.Context(), orchestrator.Deps{})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "schema=%d profile=%q domain=%q transports=%d\n",
-				s.Schema, s.Profile, s.Domain, len(s.Transports))
+			printStatusReport(cmd.OutOrStdout(), r)
 			return nil
 		},
+	}
+}
+
+func printStatusReport(w io.Writer, r *orchestrator.StatusReport) {
+	if r == nil {
+		return
+	}
+	fmt.Fprintf(w, "profile: %s\n", r.Profile)
+	fmt.Fprintf(w, "domain:  %s\n", r.Domain)
+	if r.SubscriptionURL != "" {
+		fmt.Fprintf(w, "sub URL: %s\n", r.SubscriptionURL)
+	}
+	fmt.Fprintln(w)
+	for _, t := range r.Transports {
+		fmt.Fprintf(w, "  %-8s  running=%t  probe=%t", t.Name, t.Status.Running, t.Probe.OK)
+		if t.StatErr != nil {
+			fmt.Fprintf(w, "  status_err=%v", t.StatErr)
+		}
+		if t.ProbeErr != nil {
+			fmt.Fprintf(w, "  probe_err=%v", t.ProbeErr)
+		} else if t.Probe.Notes != "" {
+			fmt.Fprintf(w, "  notes=%q", t.Probe.Notes)
+		}
+		fmt.Fprintln(w)
 	}
 }
 

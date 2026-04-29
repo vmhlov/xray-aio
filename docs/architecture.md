@@ -66,7 +66,7 @@ TLS-fingerprint, **CDN** = можно фронтить через Cloudflare,
 
 | Профиль | Состав |
 |---|---|
-| `home-stealth` (default) | VLESS REALITY (Vision+XHTTP) + naive + selfsteal |
+| `home-stealth` (default) | VLESS REALITY (Vision) + naive (Phase 1.6); + selfsteal (Phase 1.7) |
 | `home-mobile` | `home-stealth` + Hysteria 2 |
 | `home-cdn` | VLESS WS/gRPC + Trojan WS за CF |
 | `bridge-ru-eu` | Российская нода → ЕС-нода через REALITY-XHTTP |
@@ -96,8 +96,9 @@ xray-aio/
 │   │   ├── amneziawg/                                            (Phase 2)
 │   │   ├── mtproto/             mtg fake-TLS                    (Phase 2)
 │   │   └── trojan/                                               (Phase 3)
-│   ├── bridge/                  RU→EU bridge profile            (Phase 1)
-│   ├── subscribe/               подпись HMAC, выдача конфигов   (Phase 1)
+│   ├── orchestrator/            install/status coordinator      (Phase 1.6)
+│   ├── bridge/                  RU→EU bridge profile            (Phase 5)
+│   ├── subscribe/               подпись HMAC, выдача конфигов   (Phase 1.5)
 │   ├── cloudflare/
 │   │   ├── tunnel/              cloudflared (default CF mode)   (Phase 4)
 │   │   └── worker/              CF Worker via API               (Phase 4)
