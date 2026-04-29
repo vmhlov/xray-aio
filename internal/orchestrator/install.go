@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vmhlov/xray-aio/internal/log"
@@ -173,6 +174,21 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 			}
 			if ps.Naive.SelfStealRoot == "" {
 				ps.Naive.SelfStealRoot = naivetransport.DefaultSelfStealRoot
+			}
+		}
+		// Keep REALITY's upstream destination in sync with the
+		// (possibly just-changed) selfsteal port. Rule:
+		//   - operator-supplied --xray-dest always wins;
+		//   - otherwise, if state's dest is loopback (default-style),
+		//     resync to 127.0.0.1:<SelfStealPort>;
+		//   - otherwise (operator pinned dest to a CDN/external host
+		//     in a previous install), leave it alone.
+		if ps.Xray != nil {
+			switch {
+			case opts.XrayDest != "":
+				ps.Xray.Dest = opts.XrayDest
+			case ps.Naive != nil && strings.HasPrefix(ps.Xray.Dest, "127.0.0.1:"):
+				ps.Xray.Dest = fmt.Sprintf("127.0.0.1:%d", ps.Naive.SelfStealPort)
 			}
 		}
 	}
