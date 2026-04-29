@@ -110,12 +110,20 @@ func TestParsePortFromCaddyfile(t *testing.T) {
 		want int
 		err  bool
 	}{
-		{"default", "{\n\tadmin off\n}\n\n:443 {\n\tforward_proxy {\n\t}\n}\n", 443, false},
-		{"non-default", ":10443 {\n}\n", 10443, false},
-		{"with whitespace before brace", ":8443  {\n}\n", 8443, false},
+		// Render() now writes "<domain>:<port> {".
+		{"domain port default", "{\n\tadmin off\n}\n\nexample.com:443 {\n\tforward_proxy {\n\t}\n}\n", 443, false},
+		{"domain port non-default", "example.com:10443 {\n}\n", 10443, false},
+		{"domain port with whitespace", "example.com:8443  {\n}\n", 8443, false},
+		// Backwards-compat: bare port form (":443 {") used in
+		// older Render() output and accepted by Caddy too.
+		{"bare port", ":443 {\n\tforward_proxy {\n\t}\n}\n", 443, false},
+		{"bare port non-default", ":10443 {\n}\n", 10443, false},
+		// Caddy infers 443 when the site has no port at all.
+		{"domain only", "example.com {\n}\n", DefaultListenPort, false},
+		// Errors.
 		{"no site block", "{\n\tadmin off\n}\n", 0, true},
-		{"non-numeric", ":abcd {\n}\n", 0, true},
-		{"out of range", ":99999 {\n}\n", 0, true},
+		{"non-numeric", "example.com:abcd {\n}\n", 0, true},
+		{"out of range", "example.com:99999 {\n}\n", 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

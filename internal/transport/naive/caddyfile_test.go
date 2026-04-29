@@ -21,7 +21,7 @@ func TestRenderHappy(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	for _, want := range []string{
-		":443 {",
+		"example.com:443 {",
 		"basic_auth alice s3cret",
 		"hide_ip",
 		"hide_via",
@@ -34,6 +34,11 @@ func TestRenderHappy(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
+	}
+	// When Email is set, Caddy auto-issues from the global config
+	// block — no explicit `tls` directive should be emitted.
+	if strings.Contains(out, "tls internal") {
+		t.Errorf("'tls internal' must not appear when Email is set:\n%s", out)
 	}
 }
 
@@ -49,6 +54,11 @@ func TestRenderTLSInternalWhenNoEmail(t *testing.T) {
 	}
 	if strings.Contains(out, "email ") {
 		t.Fatalf("email block must be omitted when Email is empty:\n%s", out)
+	}
+	// Domain still required in site address even without LE so
+	// `tls internal` knows what subject to issue.
+	if !strings.Contains(out, "example.com:443 {") {
+		t.Fatalf("Domain must remain in site address:\n%s", out)
 	}
 }
 
@@ -109,10 +119,10 @@ func TestRenderCustomPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	if !strings.Contains(out, ":8443 {") {
-		t.Fatalf("expected :8443 site block:\n%s", out)
+	if !strings.Contains(out, "example.com:8443 {") {
+		t.Fatalf("expected example.com:8443 site block:\n%s", out)
 	}
-	if strings.Contains(out, ":443 {") {
+	if strings.Contains(out, "example.com:443 {") {
 		t.Fatalf("default port leaked:\n%s", out)
 	}
 }
