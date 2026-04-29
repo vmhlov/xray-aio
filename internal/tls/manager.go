@@ -284,8 +284,15 @@ func writeFromReader(dst string, r io.Reader, mode os.FileMode) error {
 	return os.Rename(tmpName, dst)
 }
 
-// systemdUnitTemplate is a hardened, sandboxed unit. CAP_NET_BIND_SERVICE
-// lets us bind 80/443 without running as root.
+// systemdUnitTemplate is a hardened, sandboxed unit.
+//
+//   - CAP_NET_BIND_SERVICE lets us bind 80/443 without running as root.
+//   - RuntimeDirectory=xray-aio creates /run/xray-aio at start (mode
+//     0750, owned by caddy:caddy) and removes it on stop, so the
+//     admin socket at [DefaultAdminSocket] has a place to live.
+//   - ExecReload uses `caddy reload` which talks to that admin socket;
+//     this works in the default config because we never emit
+//     `admin off` unless the operator explicitly asks for it.
 const systemdUnitTemplate = `[Unit]
 Description=xray-aio managed Caddy
 Documentation=https://caddyserver.com/docs/
@@ -296,6 +303,8 @@ Wants=network-online.target
 Type=notify
 User=caddy
 Group=caddy
+RuntimeDirectory=xray-aio
+RuntimeDirectoryMode=0750
 ExecStart={{BINARY}} run --environ --config {{CONFIG}}
 ExecReload={{BINARY}} reload --config {{CONFIG}} --force
 TimeoutStopSec=5s

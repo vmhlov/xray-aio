@@ -132,6 +132,17 @@ func TestManagerInstall(t *testing.T) {
 	if !strings.Contains(string(unit), paths.Binary) || !strings.Contains(string(unit), paths.Caddyfile) {
 		t.Fatalf("unit missing path substitutions: %s", unit)
 	}
+	// RuntimeDirectory is what makes the default unix-socket admin
+	// endpoint (and therefore Reload) work.
+	for _, want := range []string{
+		"RuntimeDirectory=xray-aio",
+		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
+		"ExecReload=",
+	} {
+		if !strings.Contains(string(unit), want) {
+			t.Fatalf("unit missing %q:\n%s", want, unit)
+		}
+	}
 
 	wantCalls := [][]string{
 		{"systemctl", "daemon-reload"},
