@@ -81,8 +81,10 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Email, "email", "", "email for Let's Encrypt registration (recommended)")
 	cmd.Flags().IntVar(&opts.XrayPort, "xray-port", 0, "override Xray REALITY listen port (default 443)")
 	cmd.Flags().IntVar(&opts.NaivePort, "naive-port", 0, "override Naive listen port (default 8444)")
-	cmd.Flags().StringVar(&opts.XrayDest, "xray-dest", "", "override REALITY upstream destination (default 127.0.0.1:8443)")
+	cmd.Flags().StringVar(&opts.XrayDest, "xray-dest", "", "override REALITY upstream destination (default 127.0.0.1:<naive-selfsteal-port>)")
 	cmd.Flags().StringVar(&opts.NaiveSiteRoot, "naive-site-root", "", "override Naive Caddy file_server root (subscriptions land under <root>/sub/<token>/)")
+	cmd.Flags().IntVar(&opts.NaiveSelfStealPort, "naive-selfsteal-port", 0, "override loopback selfsteal port served by the unified Caddy (default 8443; REALITY upstream)")
+	cmd.Flags().StringVar(&opts.NaiveSelfStealRoot, "naive-selfsteal-root", "", "override directory file_served on the selfsteal port (default /var/lib/xray-aio/selfsteal)")
 	cmd.Flags().BoolVar(&opts.SkipPreflightOnError, "skip-preflight-errors", false, "proceed even if preflight reports errors (advanced)")
 	return cmd
 }

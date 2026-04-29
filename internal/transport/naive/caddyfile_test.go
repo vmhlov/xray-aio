@@ -114,15 +114,61 @@ func TestRenderAdminOff(t *testing.T) {
 
 func TestRenderCustomPort(t *testing.T) {
 	o := goodOpts()
-	o.ListenPort = 8443
+	o.ListenPort = 9443
+	out, err := Render(o)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(out, "example.com:9443 {") {
+		t.Fatalf("expected example.com:9443 site block:\n%s", out)
+	}
+	if strings.Contains(out, "example.com:443 {") {
+		t.Fatalf("default port leaked:\n%s", out)
+	}
+}
+
+func TestRenderEmitsSelfStealSite(t *testing.T) {
+	o := goodOpts()
 	out, err := Render(o)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	if !strings.Contains(out, "example.com:8443 {") {
-		t.Fatalf("expected example.com:8443 site block:\n%s", out)
+		t.Fatalf("expected default selfsteal site on :8443 in output:\n%s", out)
 	}
-	if strings.Contains(out, "example.com:443 {") {
-		t.Fatalf("default port leaked:\n%s", out)
+	if !strings.Contains(out, "root * "+DefaultSelfStealRoot) {
+		t.Fatalf("expected selfsteal root directive:\n%s", out)
 	}
+	// The selfsteal block must NOT contain forward_proxy.
+	idx := strings.Index(out, "example.com:8443 {")
+	if idx < 0 {
+		t.Fatalf("selfsteal block missing")
+	}
+	end := strings.Index(out[idx:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("selfsteal block not terminated:\n%s", out)
+	}
+	block := out[idx : idx+end]
+	if strings.Contains(block, "forward_proxy") {
+		t.Fatalf("selfsteal block must not include forward_proxy:\n%s", block)
+	}
+}
+
+func TestRenderRejectsSelfStealCollision(t *testing.T) {
+	t.Run("port collision", func(t *testing.T) {
+		o := goodOpts()
+		o.ListenPort = 8443
+		o.SelfStealPort = 8443
+		if _, err := Render(o); err == nil {
+			t.Fatal("expected error when SelfStealPort == ListenPort")
+		}
+	})
+	t.Run("root collision", func(t *testing.T) {
+		o := goodOpts()
+		o.SiteRoot = "/var/lib/shared"
+		o.SelfStealRoot = "/var/lib/shared"
+		if _, err := Render(o); err == nil {
+			t.Fatal("expected error when SelfStealRoot == SiteRoot")
+		}
+	})
 }

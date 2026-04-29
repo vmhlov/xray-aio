@@ -66,7 +66,7 @@ TLS-fingerprint, **CDN** = можно фронтить через Cloudflare,
 
 | Профиль | Состав |
 |---|---|
-| `home-stealth` (default) | VLESS REALITY (Vision) + naive (Phase 1.6); + selfsteal (Phase 1.7) |
+| `home-stealth` (default) | VLESS REALITY (Vision) + naive forward_proxy + selfsteal под единым Caddy с ACME HTTP-01 |
 | `home-mobile` | `home-stealth` + Hysteria 2 |
 | `home-cdn` | VLESS WS/gRPC + Trojan WS за CF |
 | `bridge-ru-eu` | Российская нода → ЕС-нода через REALITY-XHTTP |
@@ -87,7 +87,6 @@ xray-aio/
 │   ├── log/                     slog wrapper
 │   ├── state/                   state.json load/save (atomic)
 │   ├── preflight/               OS/distro/ports/DNS checks
-│   ├── tls/                     Caddy install + ACME            (Phase 1)
 │   ├── transport/               Transport interface + registry
 │   │   ├── xray/                VLESS REALITY/XHTTP/TLS/WS/gRPC (Phase 1)
 │   │   ├── singbox/             sing-box backend (alt)          (Phase 3)

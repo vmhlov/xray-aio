@@ -38,16 +38,17 @@ func newTestPaths(t *testing.T) Paths {
 	t.Helper()
 	root := t.TempDir()
 	p := Paths{
-		Binary:    filepath.Join(root, "bin", "caddy-naive"),
-		ConfigDir: filepath.Join(root, "etc", "naive"),
-		Caddyfile: filepath.Join(root, "etc", "naive", "Caddyfile"),
-		SiteRoot:  filepath.Join(root, "var", "lib", "naive-selfsteal"),
-		UnitFile:  filepath.Join(root, "etc", "systemd", "xray-aio-naive.service"),
-		UnitName:  "xray-aio-naive.service",
+		Binary:        filepath.Join(root, "bin", "caddy-naive"),
+		ConfigDir:     filepath.Join(root, "etc", "naive"),
+		Caddyfile:     filepath.Join(root, "etc", "naive", "Caddyfile"),
+		SiteRoot:      filepath.Join(root, "var", "lib", "naive-selfsteal"),
+		SelfStealRoot: filepath.Join(root, "var", "lib", "selfsteal"),
+		UnitFile:      filepath.Join(root, "etc", "systemd", "xray-aio-naive.service"),
+		UnitName:      "xray-aio-naive.service",
 	}
 	for _, d := range []string{
 		filepath.Dir(p.Binary), p.ConfigDir,
-		filepath.Dir(p.UnitFile), p.SiteRoot,
+		filepath.Dir(p.UnitFile), p.SiteRoot, p.SelfStealRoot,
 	} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)

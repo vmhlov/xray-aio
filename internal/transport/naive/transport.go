@@ -41,6 +41,8 @@ func (t *transportImpl) Name() string { return Name }
 //	naive.listen_port        int     (443)
 //	naive.probe_resistance   string  (random 8-byte hex .invalid host)
 //	naive.site_root          string  (Manager.Paths.SiteRoot)
+//	naive.selfsteal_port     int     (8443)
+//	naive.selfsteal_root     string  (Manager.Paths.SelfStealRoot)
 //	naive.admin_socket       string  ("" — unix socket; "off" disables)
 //	naive.build_url          string  (Caddy build service)
 func (t *transportImpl) Install(ctx context.Context, opts transport.Options) error {
@@ -126,6 +128,10 @@ func optionsFrom(in transport.Options) (Options, error) {
 	if err != nil {
 		return Options{}, err
 	}
+	selfStealPort, err := intFrom(in.Extra, "naive.selfsteal_port", DefaultSelfStealPort)
+	if err != nil {
+		return Options{}, err
+	}
 	probe := stringFrom(in.Extra, "naive.probe_resistance", "")
 	if probe == "" {
 		probe, err = randomProbeHost()
@@ -141,6 +147,8 @@ func optionsFrom(in transport.Options) (Options, error) {
 		Password:        pass,
 		ProbeResistance: probe,
 		SiteRoot:        stringFrom(in.Extra, "naive.site_root", ""),
+		SelfStealPort:   selfStealPort,
+		SelfStealRoot:   stringFrom(in.Extra, "naive.selfsteal_root", ""),
 		AdminSocket:     stringFrom(in.Extra, "naive.admin_socket", ""),
 	}, nil
 }
