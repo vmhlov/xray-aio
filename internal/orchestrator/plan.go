@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/vmhlov/xray-aio/internal/subscribe"
+	naivetransport "github.com/vmhlov/xray-aio/internal/transport/naive"
 	xraytransport "github.com/vmhlov/xray-aio/internal/transport/xray"
 )
 
@@ -65,6 +66,10 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 	if naivePort == 0 {
 		naivePort = defaultNaivePort
 	}
+	naiveSiteRoot := opts.NaiveSiteRoot
+	if naiveSiteRoot == "" {
+		naiveSiteRoot = naivetransport.DefaultSiteRoot
+	}
 	dest := opts.XrayDest
 	if dest == "" {
 		dest = defaultXrayDest
@@ -87,6 +92,7 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 			Username:   naiveUser,
 			Password:   naivePass,
 			ListenPort: naivePort,
+			SiteRoot:   naiveSiteRoot,
 		},
 		Subscription: &SubscriptionState{
 			Secret:          base64.RawURLEncoding.EncodeToString(secret),

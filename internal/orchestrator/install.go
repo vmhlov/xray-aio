@@ -142,6 +142,12 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 		}
 		ps.Domain = opts.Domain
 		ps.Email = opts.Email
+		if ps.Naive != nil && opts.NaiveSiteRoot != "" {
+			ps.Naive.SiteRoot = opts.NaiveSiteRoot
+		}
+		if ps.Naive != nil && ps.Naive.SiteRoot == "" {
+			ps.Naive.SiteRoot = naivetransport.DefaultSiteRoot
+		}
 	}
 
 	// Phase 3: install each transport in profile order.
@@ -165,7 +171,13 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 	if err != nil {
 		return &InstallResult{State: ps, Preflight: report}, fmt.Errorf("build bundle: %w", err)
 	}
-	siteRoot := opts.NaiveSiteRoot
+	// Single source of truth for SiteRoot is ps.Naive.SiteRoot. The
+	// bundle MUST land under the same directory the naive transport's
+	// Caddyfile file_servers from, otherwise /sub/<token>/ 404s.
+	siteRoot := ""
+	if ps.Naive != nil {
+		siteRoot = ps.Naive.SiteRoot
+	}
 	if siteRoot == "" {
 		siteRoot = naivetransport.DefaultSiteRoot
 	}
@@ -227,14 +239,18 @@ func buildTransportOptions(name string, ps *ProfileState) (transport.Options, er
 		if ps.Naive == nil {
 			return transport.Options{}, errors.New("naive state missing")
 		}
+		extra := map[string]any{
+			"naive.username":    ps.Naive.Username,
+			"naive.password":    ps.Naive.Password,
+			"naive.listen_port": ps.Naive.ListenPort,
+		}
+		if ps.Naive.SiteRoot != "" {
+			extra["naive.site_root"] = ps.Naive.SiteRoot
+		}
 		return transport.Options{
 			Domain: ps.Domain,
 			Email:  ps.Email,
-			Extra: map[string]any{
-				"naive.username":    ps.Naive.Username,
-				"naive.password":    ps.Naive.Password,
-				"naive.listen_port": ps.Naive.ListenPort,
-			},
+			Extra:  extra,
 		}, nil
 	default:
 		return transport.Options{}, fmt.Errorf("orchestrator does not know how to configure %q", name)

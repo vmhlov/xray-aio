@@ -384,6 +384,94 @@ func TestStatusReflectsInstall(t *testing.T) {
 	}
 }
 
+// Regression for the bug where --naive-site-root only steered the
+// orchestrator's bundle write path; the Naive Caddyfile kept the
+// default SiteRoot and Caddy returned 404 for /sub/<token>/.
+func TestInstallPropagatesNaiveSiteRootToTransport(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	deps := Deps{
+		Rand:        &deterministicReader{},
+		PreflightFn: stubPreflight,
+		NewTransport: func(name string) (transport.Transport, error) {
+			switch name {
+			case "xray":
+				return xray, nil
+			case "naive":
+				return naive, nil
+			}
+			return nil, errors.New("unknown")
+		},
+		StatePath: statePath,
+	}
+	res, err := Install(context.Background(), InstallOptions{
+		Profile:       "home-stealth",
+		Domain:        "example.com",
+		NaiveSiteRoot: siteRoot,
+	}, deps)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if len(naive.installCalls) != 1 {
+		t.Fatalf("naive Install calls: %d", len(naive.installCalls))
+	}
+	got, _ := naive.installCalls[0].Extra["naive.site_root"].(string)
+	if got != siteRoot {
+		t.Fatalf("naive.site_root in Extra: %q (want %q)", got, siteRoot)
+	}
+	// BundleDir must be a child of siteRoot — same directory Caddy
+	// will file_serve from.
+	if !strings.HasPrefix(res.BundleDir, siteRoot+string(filepath.Separator)) {
+		t.Fatalf("BundleDir %q is not under siteRoot %q", res.BundleDir, siteRoot)
+	}
+}
+
+// On re-install the operator may pass a NEW --naive-site-root; the
+// orchestrator must update both the rendered Caddyfile AND the bundle
+// write path so they stay aligned.
+func TestInstallReinstallRefreshesNaiveSiteRoot(t *testing.T) {
+	statePath, firstRoot := setupTestState(t)
+	tmp := t.TempDir()
+	secondRoot := filepath.Join(tmp, "naive-site-second")
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	mkDeps := func() Deps {
+		return Deps{
+			Rand:        &deterministicReader{},
+			PreflightFn: stubPreflight,
+			NewTransport: func(name string) (transport.Transport, error) {
+				switch name {
+				case "xray":
+					return xray, nil
+				case "naive":
+					return naive, nil
+				}
+				return nil, errors.New("unknown")
+			},
+			StatePath: statePath,
+		}
+	}
+	if _, err := Install(context.Background(), InstallOptions{
+		Profile: "home-stealth", Domain: "example.com", NaiveSiteRoot: firstRoot,
+	}, mkDeps()); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	res, err := Install(context.Background(), InstallOptions{
+		Profile: "home-stealth", Domain: "example.com", NaiveSiteRoot: secondRoot,
+	}, mkDeps())
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	got, _ := naive.installCalls[len(naive.installCalls)-1].Extra["naive.site_root"].(string)
+	if got != secondRoot {
+		t.Errorf("re-install: naive.site_root in Extra %q (want %q)", got, secondRoot)
+	}
+	if !strings.HasPrefix(res.BundleDir, secondRoot+string(filepath.Separator)) {
+		t.Errorf("re-install BundleDir %q is not under %q", res.BundleDir, secondRoot)
+	}
+}
+
 func TestStatusErrorsWhenNoInstall(t *testing.T) {
 	statePath, _ := setupTestState(t)
 	deps := Deps{StatePath: statePath, NewTransport: func(string) (transport.Transport, error) { return nil, errors.New("unused") }}
