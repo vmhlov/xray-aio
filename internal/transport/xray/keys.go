@@ -42,6 +42,14 @@ func GenerateX25519() (X25519Keys, error) {
 	return generateX25519(rand.Reader)
 }
 
+// GenerateX25519FromReader is the same as [GenerateX25519] but takes an
+// injectable randomness source. The orchestrator uses it to drive
+// deterministic tests; production callers should prefer
+// [GenerateX25519].
+func GenerateX25519FromReader(r io.Reader) (X25519Keys, error) {
+	return generateX25519(r)
+}
+
 func generateX25519(r io.Reader) (X25519Keys, error) {
 	curve := ecdh.X25519()
 	priv, err := curve.GenerateKey(r)
