@@ -27,24 +27,45 @@ func readSmall(path string) ([]byte, error) {
 	return body[:n], nil
 }
 
-// parsePortFromCaddyfile finds the first ":<port> {" site block. Its
-// only job is to recover the listen port from a file Render() wrote;
-// it is not a full Caddyfile parser.
+// parsePortFromCaddyfile finds the first site block of the form
+//
+//	[<host>]:<port> {
+//
+// and returns the port. <host> is optional (Caddy treats a leading
+// ':' as "all hosts on that port"); when present, only the colon
+// nearest the trailing '{' is treated as the port separator. The
+// global '{' block at the top of the file (which has no preceding
+// host or port) is skipped.
+//
+// This is not a full Caddyfile parser; its only job is to recover the
+// listen port from a file Render() wrote.
 func parsePortFromCaddyfile(body []byte) (int, error) {
 	for _, line := range strings.Split(string(body), "\n") {
 		s := strings.TrimSpace(line)
-		if !strings.HasPrefix(s, ":") {
+		if !strings.HasSuffix(s, "{") {
 			continue
 		}
-		// Strip trailing "{" and surrounding whitespace.
-		s = strings.TrimSuffix(strings.TrimSpace(strings.TrimSuffix(s, "{")), " ")
-		s = strings.TrimPrefix(s, ":")
+		s = strings.TrimSpace(strings.TrimSuffix(s, "{"))
+		// Skip the global config block which is just "{"
 		if s == "" {
 			continue
 		}
-		port, err := strconv.Atoi(s)
+		// Pick the last ':' as the host:port separator so that
+		// IPv6 hosts written as "[::1]:443" or hostnames like
+		// "example.com:443" both parse.
+		idx := strings.LastIndex(s, ":")
+		if idx < 0 {
+			// Site block without a port; Caddy infers 443
+			// in this case.
+			return DefaultListenPort, nil
+		}
+		portStr := s[idx+1:]
+		if portStr == "" {
+			continue
+		}
+		port, err := strconv.Atoi(portStr)
 		if err != nil {
-			return 0, fmt.Errorf("bad port %q: %w", s, err)
+			return 0, fmt.Errorf("bad port %q: %w", portStr, err)
 		}
 		if port <= 0 || port > 65535 {
 			return 0, fmt.Errorf("port %d out of range", port)
