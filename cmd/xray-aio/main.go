@@ -129,17 +129,46 @@ func newPreflightCmd() *cobra.Command {
 		Use:   "preflight",
 		Short: "Run environment checks and print results",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			r, err := preflight.Run(cmd.Context())
+			r, _ := preflight.Run(cmd.Context())
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "OS:        %s/%s\n", r.OS, r.Arch)
-			fmt.Fprintf(out, "Distro:    %s (%s)\n", r.Distro, r.DistroName)
-			for _, w := range r.Warnings {
-				fmt.Fprintln(out, "WARN:     ", w)
+			fmt.Fprintf(out, "host: %s/%s\n", r.OS, r.Arch)
+			for _, c := range r.Checks {
+				fmt.Fprintf(out, "  %-7s  %-16s  %s\n", labelFor(c.Status), c.Name, c.Message)
 			}
-			for _, e := range r.Errors {
-				fmt.Fprintln(out, "ERR:      ", e)
+			if r.HasErrors() {
+				return fmt.Errorf("preflight failed (%d errors, %d warnings)", countStatus(r, preflight.StatusError), countStatus(r, preflight.StatusWarn))
 			}
-			return err
+			if r.HasWarnings() {
+				fmt.Fprintf(out, "\npreflight ok (%d warnings)\n", countStatus(r, preflight.StatusWarn))
+			} else {
+				fmt.Fprintln(out, "\npreflight ok")
+			}
+			return nil
 		},
 	}
+}
+
+// labelFor maps a preflight Status to a CLI marker. We deliberately
+// avoid emoji so the output is unambiguous in any terminal.
+func labelFor(s preflight.Status) string {
+	switch s {
+	case preflight.StatusOK:
+		return "[ OK ]"
+	case preflight.StatusWarn:
+		return "[WARN]"
+	case preflight.StatusError:
+		return "[ERR ]"
+	default:
+		return "[????]"
+	}
+}
+
+func countStatus(r preflight.Result, s preflight.Status) int {
+	n := 0
+	for _, c := range r.Checks {
+		if c.Status == s {
+			n++
+		}
+	}
+	return n
 }
