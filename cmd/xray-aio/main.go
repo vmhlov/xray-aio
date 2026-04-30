@@ -103,8 +103,6 @@ func printInstallResult(w io.Writer, r *orchestrator.InstallResult) {
 	if r.BundleDir != "" {
 		fmt.Fprintf(w, "bundle written: %s\n", r.BundleDir)
 	}
-	fmt.Fprintln(w, "\nphase 1.6 reminder: REALITY upstream (127.0.0.1:8443) is not auto-installed yet.")
-	fmt.Fprintln(w, "phase 1.7 will add a unified selfsteal+naive Caddy. For now operator should run something on :8443 for full stealth.")
 }
 
 func newStatusCmd() *cobra.Command {
