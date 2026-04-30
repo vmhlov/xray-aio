@@ -117,9 +117,13 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 	}
 	deps = applyDefaults(deps)
 
-	// Phase 1: preflight.
+	// Phase 1: preflight. [preflight.Run] returns a non-nil err
+	// whenever any check fails; the caller still gets a populated
+	// Result. We only treat the err as fatal when there is no result
+	// data (e.g. ctx cancelled) — otherwise SkipPreflightOnError
+	// should be able to downgrade preflight failures to warnings.
 	report, err := deps.PreflightFn(ctx)
-	if err != nil {
+	if err != nil && len(report.Checks) == 0 {
 		return nil, fmt.Errorf("preflight: %w", err)
 	}
 	if report.HasErrors() && !opts.SkipPreflightOnError {
