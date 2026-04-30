@@ -1,4 +1,4 @@
-.PHONY: build test lint vet fmt clean
+.PHONY: build test lint vet fmt clean integration
 
 BIN ?= bin/xray-aio
 PKG := github.com/vmhlov/xray-aio
@@ -26,5 +26,11 @@ lint:
 
 clean:
 	rm -rf bin dist
+
+# Boots a privileged debian:12 container with systemd as PID 1 and
+# runs the full home-stealth install + probe checklist. Requires
+# Docker on the host. ~30s end-to-end.
+integration:
+	bash test/integration/run.sh
 
 ci: vet test build
