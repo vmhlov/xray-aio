@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vmhlov/xray-aio/internal/log"
@@ -39,15 +40,28 @@ type InstallOptions struct {
 	NaivePort int
 
 	// XrayDest overrides the REALITY upstream destination
-	// (default: 127.0.0.1:8443). Phase 1.6 does not auto-install a
-	// listener at this address — operator is responsible until
-	// Phase 1.7 ships the unified selfsteal Caddy.
+	// (default: 127.0.0.1:<NaiveSelfStealPort>). Phase 1.7's unified
+	// Caddy serves a static selfsteal site on that port out of the
+	// box, so the default lands on a real LE-cert backed listener
+	// without operator action.
 	XrayDest string
 
 	// NaiveSiteRoot overrides the directory Naive Caddy file_serves
-	// from. The orchestrator writes /sub/<token>/index.html under
-	// this path; if empty, [naive.DefaultSiteRoot] is used.
+	// from on its public port. The orchestrator writes
+	// /sub/<token>/index.html under this path; if empty,
+	// [naive.DefaultSiteRoot] is used.
 	NaiveSiteRoot string
+
+	// NaiveSelfStealPort overrides the loopback port the unified
+	// Caddy uses to serve the REALITY-upstream selfsteal site. Default:
+	// [naive.DefaultSelfStealPort] (8443).
+	NaiveSelfStealPort int
+
+	// NaiveSelfStealRoot overrides the directory file_served on
+	// :NaiveSelfStealPort. MUST differ from NaiveSiteRoot so a
+	// REALITY relay never reaches /sub/*. Default:
+	// [naive.DefaultSelfStealRoot].
+	NaiveSelfStealRoot string
 
 	// SkipPreflightOnError, when true, downgrades preflight errors
 	// to warnings so install proceeds. Reserved for the operator
@@ -142,11 +156,40 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 		}
 		ps.Domain = opts.Domain
 		ps.Email = opts.Email
-		if ps.Naive != nil && opts.NaiveSiteRoot != "" {
-			ps.Naive.SiteRoot = opts.NaiveSiteRoot
+		if ps.Naive != nil {
+			if opts.NaiveSiteRoot != "" {
+				ps.Naive.SiteRoot = opts.NaiveSiteRoot
+			}
+			if ps.Naive.SiteRoot == "" {
+				ps.Naive.SiteRoot = naivetransport.DefaultSiteRoot
+			}
+			if opts.NaiveSelfStealPort != 0 {
+				ps.Naive.SelfStealPort = opts.NaiveSelfStealPort
+			}
+			if ps.Naive.SelfStealPort == 0 {
+				ps.Naive.SelfStealPort = naivetransport.DefaultSelfStealPort
+			}
+			if opts.NaiveSelfStealRoot != "" {
+				ps.Naive.SelfStealRoot = opts.NaiveSelfStealRoot
+			}
+			if ps.Naive.SelfStealRoot == "" {
+				ps.Naive.SelfStealRoot = naivetransport.DefaultSelfStealRoot
+			}
 		}
-		if ps.Naive != nil && ps.Naive.SiteRoot == "" {
-			ps.Naive.SiteRoot = naivetransport.DefaultSiteRoot
+		// Keep REALITY's upstream destination in sync with the
+		// (possibly just-changed) selfsteal port. Rule:
+		//   - operator-supplied --xray-dest always wins;
+		//   - otherwise, if state's dest is loopback (default-style),
+		//     resync to 127.0.0.1:<SelfStealPort>;
+		//   - otherwise (operator pinned dest to a CDN/external host
+		//     in a previous install), leave it alone.
+		if ps.Xray != nil {
+			switch {
+			case opts.XrayDest != "":
+				ps.Xray.Dest = opts.XrayDest
+			case ps.Naive != nil && strings.HasPrefix(ps.Xray.Dest, "127.0.0.1:"):
+				ps.Xray.Dest = fmt.Sprintf("127.0.0.1:%d", ps.Naive.SelfStealPort)
+			}
 		}
 	}
 
@@ -246,6 +289,12 @@ func buildTransportOptions(name string, ps *ProfileState) (transport.Options, er
 		}
 		if ps.Naive.SiteRoot != "" {
 			extra["naive.site_root"] = ps.Naive.SiteRoot
+		}
+		if ps.Naive.SelfStealPort != 0 {
+			extra["naive.selfsteal_port"] = ps.Naive.SelfStealPort
+		}
+		if ps.Naive.SelfStealRoot != "" {
+			extra["naive.selfsteal_root"] = ps.Naive.SelfStealRoot
 		}
 		return transport.Options{
 			Domain: ps.Domain,

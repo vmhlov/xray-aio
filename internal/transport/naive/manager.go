@@ -17,24 +17,26 @@ import (
 
 // Paths is the on-disk layout the manager owns. All paths absolute.
 type Paths struct {
-	Binary    string // /usr/local/bin/caddy-naive
-	ConfigDir string // /etc/xray-aio/naive
-	Caddyfile string // /etc/xray-aio/naive/Caddyfile
-	SiteRoot  string // /var/lib/xray-aio/naive-selfsteal
-	UnitFile  string // /etc/systemd/system/xray-aio-naive.service
-	UnitName  string // xray-aio-naive.service
+	Binary        string // /usr/local/bin/caddy-naive
+	ConfigDir     string // /etc/xray-aio/naive
+	Caddyfile     string // /etc/xray-aio/naive/Caddyfile
+	SiteRoot      string // /var/lib/xray-aio/naive-selfsteal
+	SelfStealRoot string // /var/lib/xray-aio/selfsteal
+	UnitFile      string // /etc/systemd/system/xray-aio-naive.service
+	UnitName      string // xray-aio-naive.service
 }
 
 // DefaultPaths returns the production layout. Tests pass their own
 // [Paths] rooted under t.TempDir().
 func DefaultPaths() Paths {
 	return Paths{
-		Binary:    "/usr/local/bin/caddy-naive",
-		ConfigDir: "/etc/xray-aio/naive",
-		Caddyfile: "/etc/xray-aio/naive/Caddyfile",
-		SiteRoot:  DefaultSiteRoot,
-		UnitFile:  "/etc/systemd/system/xray-aio-naive.service",
-		UnitName:  "xray-aio-naive.service",
+		Binary:        "/usr/local/bin/caddy-naive",
+		ConfigDir:     "/etc/xray-aio/naive",
+		Caddyfile:     "/etc/xray-aio/naive/Caddyfile",
+		SiteRoot:      DefaultSiteRoot,
+		SelfStealRoot: DefaultSelfStealRoot,
+		UnitFile:      "/etc/systemd/system/xray-aio-naive.service",
+		UnitName:      "xray-aio-naive.service",
 	}
 }
 
@@ -49,10 +51,12 @@ type Downloader interface {
 	Get(ctx context.Context, url string) (io.ReadCloser, error)
 }
 
-// Manager owns the Caddy-with-forwardproxy lifecycle for naive. It
-// mirrors the surface of [internal/tls.Manager] but binds to a
-// distinct binary, unit and config tree so the two Caddy instances
-// don't collide.
+// Manager owns the unified Caddy-with-forwardproxy lifecycle. One
+// Caddy instance terminates two HTTPS sites under the same domain:
+// the public NaïveProxy listener (forward_proxy + selfsteal
+// fallback) and the loopback REALITY-upstream selfsteal site. Both
+// share an ACME account and cert store via Caddy's auto-HTTPS, so
+// only one HTTP-01 challenge is needed per renewal.
 type Manager struct {
 	Paths      Paths
 	Runner     Runner
@@ -85,11 +89,17 @@ func (m *Manager) Install(ctx context.Context, opts Options) error {
 	if resolved.SiteRoot == "" {
 		resolved.SiteRoot = m.Paths.SiteRoot
 	}
+	if resolved.SelfStealRoot == "" {
+		resolved.SelfStealRoot = m.Paths.SelfStealRoot
+	}
 	if err := m.writeCaddyfile(resolved); err != nil {
 		return fmt.Errorf("write Caddyfile: %w", err)
 	}
 	if err := m.writeSiteRoot(resolved.SiteRoot); err != nil {
 		return fmt.Errorf("write site root: %w", err)
+	}
+	if err := m.writeSiteRoot(resolved.SelfStealRoot); err != nil {
+		return fmt.Errorf("write selfsteal root: %w", err)
 	}
 	if err := m.writeUnit(); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
@@ -122,6 +132,9 @@ func (m *Manager) Reload(ctx context.Context, opts Options) error {
 	resolved := opts
 	if resolved.SiteRoot == "" {
 		resolved.SiteRoot = m.Paths.SiteRoot
+	}
+	if resolved.SelfStealRoot == "" {
+		resolved.SelfStealRoot = m.Paths.SelfStealRoot
 	}
 	if err := m.writeCaddyfile(resolved); err != nil {
 		return err
@@ -286,12 +299,9 @@ func writeFromReader(dst string, r io.Reader, mode os.FileMode) error {
 	return os.Rename(tmpName, dst)
 }
 
-// systemdUnitTemplate is hardened the same way as internal/tls's unit:
-// dedicated user, ProtectSystem=full, RuntimeDirectory for the admin
-// socket, CAP_NET_BIND_SERVICE so we can listen on 443.
-//
-// The unit name is xray-aio-naive.service so it never collides with
-// xray-aio-caddy.service from the TLS package.
+// systemdUnitTemplate hardens the unified Caddy with a dedicated
+// user, ProtectSystem=full, RuntimeDirectory for the admin socket,
+// and CAP_NET_BIND_SERVICE so the process can listen on 443/80.
 const systemdUnitTemplate = `[Unit]
 Description=xray-aio managed Caddy (NaïveProxy forward_proxy)
 Documentation=https://caddyserver.com/docs/

@@ -472,6 +472,93 @@ func TestInstallReinstallRefreshesNaiveSiteRoot(t *testing.T) {
 	}
 }
 
+// On re-install with a new --naive-selfsteal-port, ps.Xray.Dest must
+// follow the new port when it's still default-style (loopback) — else
+// REALITY relays a snooper to the OLD port where Caddy no longer
+// listens, silently breaking the stealth chain.
+func TestInstallReinstallSyncsXrayDestWithSelfStealPort(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	mkDeps := func() Deps {
+		return Deps{
+			Rand:        &deterministicReader{},
+			PreflightFn: stubPreflight,
+			NewTransport: func(name string) (transport.Transport, error) {
+				switch name {
+				case "xray":
+					return xray, nil
+				case "naive":
+					return naive, nil
+				}
+				return nil, errors.New("unknown")
+			},
+			StatePath: statePath,
+		}
+	}
+	if _, err := Install(context.Background(), InstallOptions{
+		Profile: "home-stealth", Domain: "example.com", NaiveSiteRoot: siteRoot,
+	}, mkDeps()); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	res, err := Install(context.Background(), InstallOptions{
+		Profile: "home-stealth", Domain: "example.com", NaiveSiteRoot: siteRoot,
+		NaiveSelfStealPort: 9443,
+	}, mkDeps())
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if got := res.State.Xray.Dest; got != "127.0.0.1:9443" {
+		t.Errorf("Xray.Dest = %q, want 127.0.0.1:9443 (must follow new SelfStealPort)", got)
+	}
+	if got, _ := naive.installCalls[len(naive.installCalls)-1].Extra["naive.selfsteal_port"].(int); got != 9443 {
+		t.Errorf("naive.selfsteal_port in Extra = %d, want 9443", got)
+	}
+	if got, _ := xray.installCalls[len(xray.installCalls)-1].Extra["xray.dest"].(string); got != "127.0.0.1:9443" {
+		t.Errorf("xray.dest in Extra = %q, want 127.0.0.1:9443", got)
+	}
+}
+
+// Conversely, an explicitly-pinned external dest (e.g. CDN) must NOT
+// be clobbered when the operator changes only --naive-selfsteal-port.
+func TestInstallReinstallPreservesExternalXrayDest(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	mkDeps := func() Deps {
+		return Deps{
+			Rand:        &deterministicReader{},
+			PreflightFn: stubPreflight,
+			NewTransport: func(name string) (transport.Transport, error) {
+				switch name {
+				case "xray":
+					return xray, nil
+				case "naive":
+					return naive, nil
+				}
+				return nil, errors.New("unknown")
+			},
+			StatePath: statePath,
+		}
+	}
+	if _, err := Install(context.Background(), InstallOptions{
+		Profile: "home-stealth", Domain: "example.com", NaiveSiteRoot: siteRoot,
+		XrayDest: "www.cdn.example:443",
+	}, mkDeps()); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	res, err := Install(context.Background(), InstallOptions{
+		Profile: "home-stealth", Domain: "example.com", NaiveSiteRoot: siteRoot,
+		NaiveSelfStealPort: 9443,
+	}, mkDeps())
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if got := res.State.Xray.Dest; got != "www.cdn.example:443" {
+		t.Errorf("Xray.Dest = %q, want unchanged www.cdn.example:443", got)
+	}
+}
+
 func TestStatusErrorsWhenNoInstall(t *testing.T) {
 	statePath, _ := setupTestState(t)
 	deps := Deps{StatePath: statePath, NewTransport: func(string) (transport.Transport, error) { return nil, errors.New("unused") }}

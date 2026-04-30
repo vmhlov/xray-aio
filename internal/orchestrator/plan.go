@@ -70,9 +70,17 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 	if naiveSiteRoot == "" {
 		naiveSiteRoot = naivetransport.DefaultSiteRoot
 	}
+	naiveSelfStealPort := opts.NaiveSelfStealPort
+	if naiveSelfStealPort == 0 {
+		naiveSelfStealPort = naivetransport.DefaultSelfStealPort
+	}
+	naiveSelfStealRoot := opts.NaiveSelfStealRoot
+	if naiveSelfStealRoot == "" {
+		naiveSelfStealRoot = naivetransport.DefaultSelfStealRoot
+	}
 	dest := opts.XrayDest
 	if dest == "" {
-		dest = defaultXrayDest
+		dest = fmt.Sprintf("127.0.0.1:%d", naiveSelfStealPort)
 	}
 
 	return &ProfileState{
@@ -89,10 +97,12 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 			Dest:       dest,
 		},
 		Naive: &NaiveState{
-			Username:   naiveUser,
-			Password:   naivePass,
-			ListenPort: naivePort,
-			SiteRoot:   naiveSiteRoot,
+			Username:      naiveUser,
+			Password:      naivePass,
+			ListenPort:    naivePort,
+			SiteRoot:      naiveSiteRoot,
+			SelfStealPort: naiveSelfStealPort,
+			SelfStealRoot: naiveSelfStealRoot,
 		},
 		Subscription: &SubscriptionState{
 			Secret:          base64.RawURLEncoding.EncodeToString(secret),
@@ -104,7 +114,6 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 
 const (
 	defaultNaivePort = 8444
-	defaultXrayDest  = "127.0.0.1:8443"
 	defaultClientID  = "default"
 )
 

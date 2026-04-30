@@ -48,6 +48,8 @@ type NaiveState struct {
 	ListenPort      int    `json:"listen_port"`
 	ProbeResistance string `json:"probe_resistance,omitempty"`
 	SiteRoot        string `json:"site_root"`
+	SelfStealPort   int    `json:"selfsteal_port,omitempty"`
+	SelfStealRoot   string `json:"selfsteal_root,omitempty"`
 }
 
 // SubscriptionState is the per-host subscription secret plus the token
