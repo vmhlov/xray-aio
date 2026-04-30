@@ -2,10 +2,10 @@ package preflight
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 )
 
@@ -82,55 +82,80 @@ func TestCheckTCPPortPermissionDenied(t *testing.T) {
 }
 
 func TestLookupPortHolderUnitWithFakeProc(t *testing.T) {
-	// Build a fake /proc layout:
-	//   /proc/net/tcp        — single LISTEN row on port 8444 inode 999
-	//   /proc/12345/fd/3     — symlink to "socket:[999]"
-	//   /proc/12345/cgroup   — cgroup path containing xray-aio-naive.service
-	root := t.TempDir()
-	prevRoot := procRoot
-	procRoot = root
-	t.Cleanup(func() { procRoot = prevRoot })
+	// Run for two ports: 443 (proc-fs hex "01BB", needs zero-padding)
+	// and 8444 (proc-fs hex "20FC", already 4-wide). Catches the
+	// regression where the parser silently dropped 2-digit-hex ports.
+	cases := []struct {
+		name string
+		port int
+		// listenOn picks which proc table the synthetic LISTEN row
+		// is written to. Real-world: dual-stack sockets show up
+		// in /proc/net/tcp6 only.
+		listenOn string
+	}{
+		{"port-443-tcp6", 443, "tcp6"},
+		{"port-8444-tcp4", 8444, "tcp"},
+		{"port-80-tcp6", 80, "tcp6"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			prevRoot := procRoot
+			procRoot = root
+			t.Cleanup(func() { procRoot = prevRoot })
 
-	const port = 8444
-	const inode = "999"
-	netDir := filepath.Join(root, "net")
-	if err := os.MkdirAll(netDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Port 8444 in proc-fs hex (uppercase, no padding) is 20FC.
-	hexPort := strconv.FormatInt(port, 16)
-	hexPort = upper(hexPort)
-	tcpRow := "  0: 00000000:" + hexPort + " 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 " + inode + " 1 0 100 0\n"
-	tcpHeader := "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
-	if err := os.WriteFile(filepath.Join(netDir, "tcp"), []byte(tcpHeader+tcpRow), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Empty tcp6 — exercises the "skip empty file" branch.
-	if err := os.WriteFile(filepath.Join(netDir, "tcp6"), []byte(tcpHeader), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			const inode = "999"
+			netDir := filepath.Join(root, "net")
+			if err := os.MkdirAll(netDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// %04X — match the real kernel's port encoding.
+			hexPort := fmt.Sprintf("%04X", tc.port)
+			localAddr := "00000000:" + hexPort
+			if tc.listenOn == "tcp6" {
+				localAddr = "00000000000000000000000000000000:" + hexPort
+			}
+			tcpRow := "  0: " + localAddr + " 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 " + inode + " 1 0 100 0\n"
+			tcpHeader := "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+			tcpPath := filepath.Join(netDir, "tcp")
+			tcp6Path := filepath.Join(netDir, "tcp6")
+			tcpContent := tcpHeader
+			tcp6Content := tcpHeader
+			if tc.listenOn == "tcp6" {
+				tcp6Content += tcpRow
+			} else {
+				tcpContent += tcpRow
+			}
+			if err := os.WriteFile(tcpPath, []byte(tcpContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(tcp6Path, []byte(tcp6Content), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	pidDir := filepath.Join(root, "12345")
-	fdDir := filepath.Join(pidDir, "fd")
-	if err := os.MkdirAll(fdDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("socket:["+inode+"]", filepath.Join(fdDir, "3")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(pidDir, "cgroup"),
-		[]byte("0::/system.slice/xray-aio-naive.service\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			pidDir := filepath.Join(root, "12345")
+			fdDir := filepath.Join(pidDir, "fd")
+			if err := os.MkdirAll(fdDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("socket:["+inode+"]", filepath.Join(fdDir, "3")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(pidDir, "cgroup"),
+				[]byte("0::/system.slice/xray-aio-naive.service\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	got := lookupPortHolderUnit(port)
-	if got != "xray-aio-naive" {
-		t.Fatalf("lookupPortHolderUnit(%d) = %q; want xray-aio-naive", port, got)
-	}
+			got := lookupPortHolderUnit(tc.port)
+			if got != "xray-aio-naive" {
+				t.Fatalf("lookupPortHolderUnit(%d) = %q; want xray-aio-naive", tc.port, got)
+			}
 
-	// Negative: a port nobody is listening on returns "".
-	if got := lookupPortHolderUnit(9999); got != "" {
-		t.Fatalf("lookupPortHolderUnit(9999) = %q; want empty", got)
+			// Negative: a port nobody is listening on returns "".
+			if got := lookupPortHolderUnit(9999); got != "" {
+				t.Fatalf("lookupPortHolderUnit(9999) = %q; want empty", got)
+			}
+		})
 	}
 }
 
@@ -146,7 +171,7 @@ func TestLookupPortHolderUnitForeignServiceReturnsEmpty(t *testing.T) {
 	if err := os.MkdirAll(netDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	hexPort := upper(strconv.FormatInt(port, 16))
+	hexPort := fmt.Sprintf("%04X", port)
 	tcpRow := "  0: 00000000:" + hexPort + " 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 " + inode + " 1 0 100 0\n"
 	tcpHeader := "  sl  local_address rem_address   st\n"
 	if err := os.WriteFile(filepath.Join(netDir, "tcp"), []byte(tcpHeader+tcpRow), 0o644); err != nil {
@@ -200,14 +225,4 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
-}
-
-func upper(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'a' && c <= 'z' {
-			b[i] = c - ('a' - 'A')
-		}
-	}
-	return string(b)
 }

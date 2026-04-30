@@ -147,10 +147,15 @@ func findListeningPID(port int) (int, bool) {
 
 // findListeningInode parses /proc/net/tcp and /proc/net/tcp6 for the
 // first row whose local address ends with `:<port>` (in proc-fs's
-// uppercase-hex encoding) and whose state is 0A (LISTEN). Returns
-// the inode column as a decimal string.
+// uppercase-hex encoding, zero-padded to four nibbles) and whose
+// state is 0A (LISTEN). Returns the inode column as a decimal
+// string.
 func findListeningInode(port int) (string, bool) {
-	hexPort := strings.ToUpper(strconv.FormatInt(int64(port), 16))
+	// Linux formats the port as %04X (e.g. 80 → "0050", 443 →
+	// "01BB", 8444 → "20FC"). Match the kernel's width exactly so
+	// 2-digit-hex ports are not silently dropped by an
+	// unpadded compare.
+	hexPort := fmt.Sprintf("%04X", port)
 	for _, path := range []string{
 		filepath.Join(procRoot, "net", "tcp"),
 		filepath.Join(procRoot, "net", "tcp6"),
