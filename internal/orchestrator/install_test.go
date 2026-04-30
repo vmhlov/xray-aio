@@ -287,6 +287,48 @@ func TestInstallCanSkipPreflightErrors(t *testing.T) {
 	}
 }
 
+// TestInstallSkipPreflightHonoursPreflightErrReturn pins the
+// regression where Install bailed on the err returned by
+// [preflight.Run] before checking SkipPreflightOnError. The real
+// preflight.Run returns (Result, errors.New("preflight failed"))
+// whenever any check fails — Install must downgrade that to a
+// warning when the operator passes --skip-preflight-errors.
+func TestInstallSkipPreflightHonoursPreflightErrReturn(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	failingWithErr := func(_ context.Context) (preflight.Result, error) {
+		return preflight.Result{
+			Checks: []preflight.Check{{Name: "ports", Status: preflight.StatusError, Message: "443 in use"}},
+		}, errors.New("preflight failed")
+	}
+	deps := Deps{
+		Rand:        &deterministicReader{},
+		PreflightFn: failingWithErr,
+		NewTransport: func(name string) (transport.Transport, error) {
+			switch name {
+			case "xray":
+				return xray, nil
+			case "naive":
+				return naive, nil
+			}
+			return nil, errors.New("unknown")
+		},
+		StatePath: statePath,
+	}
+	_, err := Install(context.Background(), InstallOptions{
+		Profile: "home-stealth", Domain: "example.com",
+		NaiveSiteRoot:        siteRoot,
+		SkipPreflightOnError: true,
+	}, deps)
+	if err != nil {
+		t.Fatalf("expected install to succeed with skip flag even when PreflightFn returned err: %v", err)
+	}
+	if len(xray.installCalls)+len(naive.installCalls) != 2 {
+		t.Errorf("transports must run when skip flag downgrades preflight err; got %d calls", len(xray.installCalls)+len(naive.installCalls))
+	}
+}
+
 func TestInstallSurfacesTransportError(t *testing.T) {
 	statePath, siteRoot := setupTestState(t)
 	xray := &fakeTransport{name: "xray", installErr: errors.New("boom")}
