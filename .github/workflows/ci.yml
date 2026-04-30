@@ -81,3 +81,24 @@ jobs:
         with:
           version: v1.62
           args: --timeout=5m
+
+  integration:
+    name: integration (debian-12 systemd)
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+      # Boots a privileged debian:12 container with systemd as PID 1
+      # and runs the full home-stealth install + probe checklist
+      # (config write, sysuser, systemd start, /sub/<token>/, proxy
+      # gate, idempotent re-install). Catches regressions like #10
+      # (missing system users), #11 (Caddy directive reordering)
+      # and #12 (host-matcher dropping HTTP/1.1 CONNECT) without
+      # needing a real domain or VPS.
+      - name: integration
+        run: make integration
