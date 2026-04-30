@@ -21,7 +21,10 @@ func TestRenderHappy(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	for _, want := range []string{
-		"example.com:443 {",
+		// Site address now lists the named host first (drives
+		// LE issuance) and the bare port second (lifts the host
+		// matcher off forward_proxy so HTTP/1.1 CONNECT works).
+		"example.com:443, :443 {",
 		"basic_auth alice s3cret",
 		"hide_ip",
 		"hide_via",
@@ -57,7 +60,7 @@ func TestRenderTLSInternalWhenNoEmail(t *testing.T) {
 	}
 	// Domain still required in site address even without LE so
 	// `tls internal` knows what subject to issue.
-	if !strings.Contains(out, "example.com:443 {") {
+	if !strings.Contains(out, "example.com:443, :443 {") {
 		t.Fatalf("Domain must remain in site address:\n%s", out)
 	}
 }
@@ -119,10 +122,10 @@ func TestRenderCustomPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	if !strings.Contains(out, "example.com:9443 {") {
+	if !strings.Contains(out, "example.com:9443, :9443 {") {
 		t.Fatalf("expected example.com:9443 site block:\n%s", out)
 	}
-	if strings.Contains(out, "example.com:443 {") {
+	if strings.Contains(out, "example.com:443, :443 {") {
 		t.Fatalf("default port leaked:\n%s", out)
 	}
 }
@@ -169,7 +172,7 @@ func TestRenderWrapsForwardProxyInRouteBlock(t *testing.T) {
 	}
 	// The proxy site block must contain a route that holds
 	// forward_proxy, root, and file_server in that order.
-	siteOpen := strings.Index(out, "example.com:443 {")
+	siteOpen := strings.Index(out, "example.com:443, :443 {")
 	if siteOpen < 0 {
 		t.Fatalf("proxy site block missing:\n%s", out)
 	}
@@ -206,6 +209,37 @@ func TestRenderWrapsForwardProxyInRouteBlock(t *testing.T) {
 	if strings.Contains(out[selfOpen:selfOpen+selfEnd], "route {") {
 		t.Fatalf("selfsteal block must not wrap in route — pure file_server:\n%s",
 			out[selfOpen:selfOpen+selfEnd])
+	}
+}
+
+// TestRenderListsBarePortAddrForForwardProxy pins the regression
+// that surfaced after PR #11's directive-order fix: the Caddyfile
+// adapter compiles a single named address `example.com:443` into a
+// route guarded by `host=example.com`, but HTTP/1.1 CONNECT carries
+// `Host: <target>:port` which never matches the proxy's own
+// hostname — forward_proxy is unreachable for HTTP/1.1 clients.
+// The named-and-bare pair `example.com:443, :443` lifts the host
+// matcher off the route while keeping LE issuance for example.com.
+// HTTP/2 naïve clients use `:authority` = proxy hostname so they
+// would match either form, but operators pointing curl / pacparser
+// / generic HTTP/1.1 clients at the proxy must work too.
+func TestRenderListsBarePortAddrForForwardProxy(t *testing.T) {
+	out, err := Render(goodOpts())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(out, "example.com:443, :443 {") {
+		t.Fatalf("expected named+bare site address `example.com:443, :443 {`:\n%s", out)
+	}
+	// The selfsteal site MUST keep its named address only — no
+	// bare-port escape hatch — because it is REALITY's loopback
+	// upstream and is supposed to host-gate everything that
+	// reaches it.
+	if !strings.Contains(out, "example.com:8443 {") {
+		t.Fatalf("selfsteal site must use named-only address:\n%s", out)
+	}
+	if strings.Contains(out, ":8443, :8443") || strings.Contains(out, "example.com:8443, :8443") {
+		t.Fatalf("selfsteal site must NOT add a bare-port sibling — it's host-gated:\n%s", out)
 	}
 }
 
