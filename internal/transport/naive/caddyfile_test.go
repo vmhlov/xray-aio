@@ -154,6 +154,61 @@ func TestRenderEmitsSelfStealSite(t *testing.T) {
 	}
 }
 
+// TestRenderWrapsForwardProxyInRouteBlock pins the regression that
+// took down PR #10's first VPS deployment: Caddy's Caddyfile adapter
+// reorders top-level directives by a hard-coded schema in which
+// file_server runs before any third-party handler, so a naïve
+// `forward_proxy ; file_server` template compiled to a route where
+// file_server responded to CONNECT first and forward_proxy never
+// ran. Wrapping the trio in `route { }` blocks the reorder; this
+// test fails fast if a future edit removes the route.
+func TestRenderWrapsForwardProxyInRouteBlock(t *testing.T) {
+	out, err := Render(goodOpts())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	// The proxy site block must contain a route that holds
+	// forward_proxy, root, and file_server in that order.
+	siteOpen := strings.Index(out, "example.com:443 {")
+	if siteOpen < 0 {
+		t.Fatalf("proxy site block missing:\n%s", out)
+	}
+	siteEnd := strings.Index(out[siteOpen:], "\n}\n")
+	if siteEnd < 0 {
+		t.Fatalf("proxy site block not terminated:\n%s", out)
+	}
+	site := out[siteOpen : siteOpen+siteEnd]
+	routeOpen := strings.Index(site, "route {")
+	if routeOpen < 0 {
+		t.Fatalf("forward_proxy must be wrapped in route { }:\n%s", site)
+	}
+	// Within the route block, forward_proxy must precede file_server
+	// (textual order is what Caddy preserves inside a route).
+	rb := site[routeOpen:]
+	fp := strings.Index(rb, "forward_proxy")
+	fs := strings.Index(rb, "file_server")
+	if fp < 0 || fs < 0 {
+		t.Fatalf("forward_proxy or file_server missing inside route block:\n%s", rb)
+	}
+	if fp > fs {
+		t.Fatalf("forward_proxy must appear BEFORE file_server inside route { }:\n%s", rb)
+	}
+	// The selfsteal site must NOT have a route block — it is a
+	// pure static server, no proxy semantics.
+	selfOpen := strings.Index(out, "example.com:8443 {")
+	if selfOpen < 0 {
+		t.Fatalf("selfsteal site block missing:\n%s", out)
+	}
+	selfEnd := strings.Index(out[selfOpen:], "\n}\n")
+	if selfEnd < 0 {
+		t.Fatalf("selfsteal site block not terminated:\n%s", out)
+	}
+	if strings.Contains(out[selfOpen:selfOpen+selfEnd], "route {") {
+		t.Fatalf("selfsteal block must not wrap in route — pure file_server:\n%s",
+			out[selfOpen:selfOpen+selfEnd])
+	}
+}
+
 func TestRenderRejectsSelfStealCollision(t *testing.T) {
 	t.Run("port collision", func(t *testing.T) {
 		o := goodOpts()
