@@ -112,8 +112,11 @@ func TestManagerInstall(t *testing.T) {
 	if !strings.Contains(string(cfgBytes), `"protocol": "vless"`) {
 		t.Fatalf("config missing protocol: %s", cfgBytes)
 	}
-	if info, _ := os.Stat(paths.Config); info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("config readable by group/other: %v", info.Mode())
+	// Config carries REALITY private key and UUIDs. It must not be
+	// world-readable; group-readable is fine because the xray group
+	// owns it after chown.
+	if info, _ := os.Stat(paths.Config); info.Mode().Perm()&0o007 != 0 {
+		t.Fatalf("config readable by world: %v", info.Mode())
 	}
 
 	unit, err := os.ReadFile(paths.UnitFile)
@@ -131,7 +134,11 @@ func TestManagerInstall(t *testing.T) {
 		}
 	}
 
+	// fakeRunner returns nil for every command, so getent passwd xray
+	// succeeds → Ensure short-circuits without group/user creation.
 	wantCalls := [][]string{
+		{"getent", "passwd", "xray"},
+		{"chown", "root:xray", paths.Config},
 		{"systemctl", "daemon-reload"},
 		{"systemctl", "enable", "--now", "xray-aio-xray.service"},
 	}

@@ -92,8 +92,11 @@ func TestManagerInstall(t *testing.T) {
 			t.Fatalf("Caddyfile missing %q:\n%s", want, cf)
 		}
 	}
-	if info, _ := os.Stat(paths.Caddyfile); info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("Caddyfile readable by group/other: %v", info.Mode())
+	// Caddyfile holds forward_proxy basic_auth credentials. It must
+	// not be world-readable; group-readable is required because
+	// User=caddy reads it via the caddy group after chown.
+	if info, _ := os.Stat(paths.Caddyfile); info.Mode().Perm()&0o007 != 0 {
+		t.Fatalf("Caddyfile readable by world: %v", info.Mode())
 	}
 
 	idx, err := os.ReadFile(filepath.Join(paths.SiteRoot, "index.html"))
@@ -111,6 +114,8 @@ func TestManagerInstall(t *testing.T) {
 	for _, want := range []string{
 		paths.Binary, paths.Caddyfile,
 		"RuntimeDirectory=xray-aio",
+		"StateDirectory=caddy",
+		"Environment=XDG_DATA_HOME=/var/lib/caddy",
 		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
 		"ExecReload=",
 		"ProtectSystem=full",
@@ -120,7 +125,12 @@ func TestManagerInstall(t *testing.T) {
 		}
 	}
 
+	// fakeRunner returns nil for every command, so getent passwd
+	// caddy succeeds → Ensure short-circuits without group/user
+	// creation.
 	want := [][]string{
+		{"getent", "passwd", "caddy"},
+		{"chown", "root:caddy", paths.Caddyfile},
 		{"systemctl", "daemon-reload"},
 		{"systemctl", "enable", "--now", "xray-aio-naive.service"},
 	}

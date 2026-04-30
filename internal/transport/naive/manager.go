@@ -13,7 +13,16 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/vmhlov/xray-aio/internal/sysuser"
 )
+
+// systemUser is the unprivileged account systemd drops to before
+// exec'ing the unified Caddy. Must match User=/Group= in
+// [systemdUnitTemplate]. The name "caddy" matches upstream's deb
+// package convention so a Caddy that is later replaced through the
+// distro package keeps owning the same /var/lib/caddy data tree.
+const systemUser = "caddy"
 
 // Paths is the on-disk layout the manager owns. All paths absolute.
 type Paths struct {
@@ -85,6 +94,9 @@ func (m *Manager) Install(ctx context.Context, opts Options) error {
 	if err := m.ensureBinary(ctx); err != nil {
 		return fmt.Errorf("install caddy-naive binary: %w", err)
 	}
+	if err := sysuser.Ensure(ctx, m.Runner, systemUser); err != nil {
+		return fmt.Errorf("ensure system user: %w", err)
+	}
 	resolved := opts
 	if resolved.SiteRoot == "" {
 		resolved.SiteRoot = m.Paths.SiteRoot
@@ -94,6 +106,13 @@ func (m *Manager) Install(ctx context.Context, opts Options) error {
 	}
 	if err := m.writeCaddyfile(resolved); err != nil {
 		return fmt.Errorf("write Caddyfile: %w", err)
+	}
+	// Caddyfile carries forward_proxy basic_auth credentials. Stays
+	// mode 0640; we hand the group to the freshly-ensured caddy
+	// group so the unit can read it as User=caddy without exposing
+	// the file to other local users.
+	if _, err := m.Runner.Run(ctx, "chown", "root:"+systemUser, m.Paths.Caddyfile); err != nil {
+		return fmt.Errorf("chown Caddyfile: %w", err)
 	}
 	if err := m.writeSiteRoot(resolved.SiteRoot); err != nil {
 		return fmt.Errorf("write site root: %w", err)
@@ -184,7 +203,7 @@ func (m *Manager) writeCaddyfile(o Options) error {
 	if err := os.MkdirAll(filepath.Dir(m.Paths.Caddyfile), 0o755); err != nil {
 		return err
 	}
-	return writeFileAtomic(m.Paths.Caddyfile, []byte(body), 0o600)
+	return writeFileAtomic(m.Paths.Caddyfile, []byte(body), 0o640)
 }
 
 // writeSiteRoot installs the embedded fallback index.html under
@@ -301,7 +320,14 @@ func writeFromReader(dst string, r io.Reader, mode os.FileMode) error {
 
 // systemdUnitTemplate hardens the unified Caddy with a dedicated
 // user, ProtectSystem=full, RuntimeDirectory for the admin socket,
-// and CAP_NET_BIND_SERVICE so the process can listen on 443/80.
+// StateDirectory for the ACME cert store, and CAP_NET_BIND_SERVICE
+// so the process can listen on 443/80.
+//
+// XDG_DATA_HOME and HOME both point at /var/lib/caddy because Caddy
+// resolves its certificate cache at "{$XDG_DATA_HOME-{$HOME/.local/
+// share}}/caddy"; without either env var Caddy falls back to a
+// /nonexistent home and HTTP-01 issuance fails before it leaves
+// memory.
 const systemdUnitTemplate = `[Unit]
 Description=xray-aio managed Caddy (NaïveProxy forward_proxy)
 Documentation=https://caddyserver.com/docs/
@@ -314,6 +340,10 @@ User=caddy
 Group=caddy
 RuntimeDirectory=xray-aio
 RuntimeDirectoryMode=0750
+StateDirectory=caddy
+StateDirectoryMode=0700
+Environment=HOME=/var/lib/caddy
+Environment=XDG_DATA_HOME=/var/lib/caddy
 ExecStart={{BINARY}} run --environ --config {{CONFIG}}
 ExecReload={{BINARY}} reload --config {{CONFIG}} --force
 TimeoutStopSec=5s

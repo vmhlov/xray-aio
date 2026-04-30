@@ -14,7 +14,13 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/vmhlov/xray-aio/internal/sysuser"
 )
+
+// systemUser is the unprivileged account systemd drops to before
+// exec'ing xray. Must match User=/Group= in [systemdUnitTemplate].
+const systemUser = "xray"
 
 // Version is the pinned upstream Xray-core release we install. Bump
 // only after we exercised the binary on a real VPS.
@@ -76,8 +82,17 @@ func (m *Manager) Install(ctx context.Context, cfg Config) error {
 	if err := m.ensureBinary(ctx); err != nil {
 		return fmt.Errorf("install xray binary: %w", err)
 	}
+	if err := sysuser.Ensure(ctx, m.Runner, systemUser); err != nil {
+		return fmt.Errorf("ensure system user: %w", err)
+	}
 	if err := m.writeConfig(cfg); err != nil {
 		return fmt.Errorf("write config: %w", err)
+	}
+	// Config holds the REALITY private key and client UUIDs, so it
+	// stays mode 0640 — but the xray user needs to read it. Hand the
+	// group to the freshly-ensured xray group.
+	if _, err := m.Runner.Run(ctx, "chown", "root:"+systemUser, m.Paths.Config); err != nil {
+		return fmt.Errorf("chown config: %w", err)
 	}
 	if err := m.writeUnit(); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
@@ -153,7 +168,7 @@ func (m *Manager) writeConfig(cfg Config) error {
 	if err := os.MkdirAll(filepath.Dir(m.Paths.Config), 0o755); err != nil {
 		return err
 	}
-	return writeFileAtomic(m.Paths.Config, []byte(body), 0o600)
+	return writeFileAtomic(m.Paths.Config, []byte(body), 0o640)
 }
 
 func (m *Manager) writeUnit() error {
