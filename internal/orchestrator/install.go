@@ -239,18 +239,31 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 			//     e.g. https://news.ycombinator.com), leave it alone;
 			//   - if state is empty (fresh install on existing
 			//     state.json without hy2), fall back to default.
-			defaultMasq := fmt.Sprintf("https://%s:%d", opts.Domain, ps.Naive.SelfStealPort)
-			legacyLoopbackPrefix := "https://127.0.0.1:"
-			currentDomainPrefix := fmt.Sprintf("https://%s:", opts.Domain)
+			// Defensive: every default-style branch is guarded by
+			// `ps.Naive != nil` (handled by the earlier case) — the
+			// orchestrator's Phase 1 invariant requires Naive
+			// alongside Hysteria2, but a hand-edited state.json
+			// could break that, and we should not panic.
 			switch {
 			case opts.Hysteria2MasqueradeURL != "":
 				ps.Hysteria2.MasqueradeURL = opts.Hysteria2MasqueradeURL
-			case ps.Naive != nil && strings.HasPrefix(ps.Hysteria2.MasqueradeURL, legacyLoopbackPrefix):
-				ps.Hysteria2.MasqueradeURL = defaultMasq
-			case ps.Naive != nil && strings.HasPrefix(ps.Hysteria2.MasqueradeURL, currentDomainPrefix):
-				ps.Hysteria2.MasqueradeURL = defaultMasq
-			case ps.Hysteria2.MasqueradeURL == "" && ps.Naive != nil:
-				ps.Hysteria2.MasqueradeURL = defaultMasq
+			case ps.Naive == nil:
+				// No selfsteal target — leave whatever was there;
+				// Hysteria2 will still come up but masquerade won't
+				// be useful until the operator re-runs install with
+				// a profile that carries Naive.
+			case strings.HasPrefix(ps.Hysteria2.MasqueradeURL, "https://127.0.0.1:"):
+				// Legacy loopback URL written by xray-aio < #21 —
+				// migrate to domain-form so SNI matches Caddy.
+				ps.Hysteria2.MasqueradeURL = fmt.Sprintf("https://%s:%d", opts.Domain, ps.Naive.SelfStealPort)
+			case strings.HasPrefix(ps.Hysteria2.MasqueradeURL, fmt.Sprintf("https://%s:", opts.Domain)):
+				// Current domain-form default — refresh to follow
+				// the (possibly just-changed) NaiveSelfStealPort.
+				ps.Hysteria2.MasqueradeURL = fmt.Sprintf("https://%s:%d", opts.Domain, ps.Naive.SelfStealPort)
+			case ps.Hysteria2.MasqueradeURL == "":
+				// First-time wiring on existing state.json that
+				// didn't have a Hysteria2 block.
+				ps.Hysteria2.MasqueradeURL = fmt.Sprintf("https://%s:%d", opts.Domain, ps.Naive.SelfStealPort)
 			}
 		}
 	}

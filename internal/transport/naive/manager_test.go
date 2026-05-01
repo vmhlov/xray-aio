@@ -132,7 +132,8 @@ func TestManagerInstall(t *testing.T) {
 		{"getent", "passwd", "caddy"},
 		{"chown", "root:caddy", paths.Caddyfile},
 		{"systemctl", "daemon-reload"},
-		{"systemctl", "enable", "--now", "xray-aio-naive.service"},
+		{"systemctl", "enable", "xray-aio-naive.service"},
+		{"systemctl", "restart", "xray-aio-naive.service"},
 	}
 	if !equalCalls(runner.calls, want) {
 		t.Fatalf("calls=%v want %v", runner.calls, want)

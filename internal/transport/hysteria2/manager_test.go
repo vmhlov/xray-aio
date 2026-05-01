@@ -110,12 +110,16 @@ func TestManagerInstall(t *testing.T) {
 	}
 
 	// At minimum: getent (sysuser probe), chown, daemon-reload,
-	// enable+start. Deeper introspection lives in dedicated tests.
+	// enable, restart. Deeper introspection lives in dedicated
+	// tests. The restart (rather than `enable --now`) is what makes
+	// re-install pick up freshly-rendered config without operator
+	// intervention.
 	gotCmds := commandSummary(runner)
 	for _, want := range []string{
 		"getent passwd caddy",
 		"daemon-reload",
-		"enable --now xray-aio-hysteria2.service",
+		"enable xray-aio-hysteria2.service",
+		"restart xray-aio-hysteria2.service",
 	} {
 		if !strings.Contains(gotCmds, want) {
 			t.Errorf("expected command %q in:\n%s", want, gotCmds)
