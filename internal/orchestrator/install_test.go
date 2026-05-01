@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1102,5 +1103,76 @@ func TestStatusErrorsWhenNoInstall(t *testing.T) {
 	deps := Deps{StatePath: statePath, NewTransport: func(string) (transport.Transport, error) { return nil, errors.New("unused") }}
 	if _, err := Status(context.Background(), deps); err == nil {
 		t.Fatal("expected error when state.json is empty")
+	}
+}
+
+// TestApplyDefaultsHomeVPNPicksUpAmneziaWGPreflight pins the
+// behavioural contract added in PR #27: when the operator does not
+// override Deps.PreflightFn, a home-vpn install must run the
+// AmneziaWG-specific checks (UDP listen port + /dev/net/tun). The
+// home-stealth and home-mobile profiles must NOT — those operators
+// will see a spurious error if they happen to install on a host
+// without the tun module loaded.
+func TestApplyDefaultsHomeVPNPicksUpAmneziaWGPreflight(t *testing.T) {
+	cases := []struct {
+		profile string
+		wantAWG bool
+	}{
+		{"home-stealth", false},
+		{"home-mobile", false},
+		{"home-vpn", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.profile, func(t *testing.T) {
+			deps := applyDefaults(InstallOptions{Profile: tc.profile}, Deps{})
+			if deps.PreflightFn == nil {
+				t.Fatal("PreflightFn nil after applyDefaults")
+			}
+			r, _ := deps.PreflightFn(context.Background())
+			var sawAWG bool
+			for _, c := range r.Checks {
+				if c.Name == "amneziawg-udp" || c.Name == "dev-net-tun" {
+					sawAWG = true
+					break
+				}
+			}
+			if sawAWG != tc.wantAWG {
+				t.Fatalf("profile=%q sawAWGCheck=%v; want %v\nchecks=%+v", tc.profile, sawAWG, tc.wantAWG, r.Checks)
+			}
+		})
+	}
+}
+
+// TestApplyDefaultsHomeVPNHonoursListenPortOverride pins that the
+// CLI's --amneziawg-listen-port flag flows into preflight, not just
+// into the rendered .conf. Without this, an operator overriding the
+// port would have preflight check the default 51842 while the
+// transport binds the override → false negative on conflict.
+func TestApplyDefaultsHomeVPNHonoursListenPortOverride(t *testing.T) {
+	// Bind a UDP socket on a free port, then ask Install for that
+	// port via opts. preflight must surface a hard error for that
+	// specific port — confirming opts.AmneziaWGListenPort flows
+	// into the default PreflightFn.
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+
+	deps := applyDefaults(InstallOptions{Profile: "home-vpn", AmneziaWGListenPort: port}, Deps{})
+	r, _ := deps.PreflightFn(context.Background())
+	var awgCheck preflight.Check
+	for _, c := range r.Checks {
+		if c.Name == "amneziawg-udp" {
+			awgCheck = c
+			break
+		}
+	}
+	if awgCheck.Name == "" {
+		t.Fatal("amneziawg-udp check missing")
+	}
+	if awgCheck.Status != preflight.StatusError {
+		t.Fatalf("amneziawg-udp on busy port: status=%s msg=%q; want error", awgCheck.Status, awgCheck.Message)
 	}
 }

@@ -31,7 +31,10 @@ type TransportStatus struct {
 // Status returns the current health of the installed profile. Reads
 // state.json, then dials each transport's Status + Probe.
 func Status(ctx context.Context, deps Deps) (*StatusReport, error) {
-	deps = applyDefaults(deps)
+	// Status does not run preflight, but applyDefaults still sets
+	// Rand / NewTransport / Now. Empty InstallOptions makes the
+	// default PreflightFn run the standard suite — never invoked.
+	deps = applyDefaults(InstallOptions{}, deps)
 	if deps.StatePath != "" {
 		// Mirror Install: any explicit override wins.
 		if err := setStatePath(deps.StatePath); err != nil {

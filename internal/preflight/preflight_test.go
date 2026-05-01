@@ -75,6 +75,55 @@ func TestReadOSReleaseMissing(t *testing.T) {
 	}
 }
 
+func TestRunWithAmneziaWGAddsAWGChecks(t *testing.T) {
+	// RunWith with AmneziaWGListenPort > 0 must extend the standard
+	// suite with the two AWG-specific checks. We point DevNetTUNPath
+	// at a missing file so the suite reliably surfaces an error
+	// without depending on whether /dev/net/tun exists in CI.
+	port := pickFreeUDPPort(t)
+	r, err := RunWith(context.Background(), Options{
+		AmneziaWGListenPort: port,
+		DevNetTUNPath:       filepath.Join(t.TempDir(), "no-tun-here"),
+	})
+	if err == nil {
+		t.Fatal("expected err: dev-net-tun should fail on missing path")
+	}
+	var sawAWGUDP, sawTUN bool
+	for _, c := range r.Checks {
+		switch c.Name {
+		case "amneziawg-udp":
+			sawAWGUDP = true
+			if c.Status != StatusOK {
+				t.Errorf("amneziawg-udp on a free port: status=%s msg=%q", c.Status, c.Message)
+			}
+		case "dev-net-tun":
+			sawTUN = true
+			if c.Status != StatusError {
+				t.Errorf("dev-net-tun on missing path: status=%s msg=%q; want error", c.Status, c.Message)
+			}
+		}
+	}
+	if !sawAWGUDP {
+		t.Error("RunWith did not include amneziawg-udp check")
+	}
+	if !sawTUN {
+		t.Error("RunWith did not include dev-net-tun check")
+	}
+}
+
+func TestRunWithoutAmneziaWGSkipsAWGChecks(t *testing.T) {
+	// Zero-value Options must NOT add AWG checks — the home-stealth
+	// and home-mobile profiles do not need them and should not see
+	// spurious errors when /dev/net/tun is absent on a build host.
+	r, err := RunWith(context.Background(), Options{})
+	_ = err
+	for _, c := range r.Checks {
+		if c.Name == "amneziawg-udp" || c.Name == "dev-net-tun" {
+			t.Errorf("Options{} produced AWG check %q; want only the standard suite", c.Name)
+		}
+	}
+}
+
 func TestParseKernelVersion(t *testing.T) {
 	cases := []struct {
 		in               string
