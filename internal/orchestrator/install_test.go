@@ -752,6 +752,99 @@ func TestInstallReinstallHomeMobilePreservesPasswordRotatesPort(t *testing.T) {
 	}
 }
 
+// On re-install with a new --naive-selfsteal-port, Hysteria2.MasqueradeURL
+// must follow the new port when it's still default-style (loopback) —
+// else hy2's masquerade points to a port nothing listens on, active DPI
+// probes get connection-error instead of a convincing site, and the
+// proxy is fingerprintable. Mirrors TestInstallReinstallSyncsXrayDestWithSelfStealPort.
+func TestInstallReinstallSyncsHysteria2MasqueradeWithSelfStealPort(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	hy2 := &fakeTransport{name: "hysteria2"}
+	mkDeps := func() Deps {
+		return Deps{
+			Rand:        &deterministicReader{},
+			PreflightFn: stubPreflight,
+			NewTransport: func(name string) (transport.Transport, error) {
+				switch name {
+				case "xray":
+					return xray, nil
+				case "naive":
+					return naive, nil
+				case "hysteria2":
+					return hy2, nil
+				}
+				return nil, errors.New("unknown")
+			},
+			StatePath: statePath,
+		}
+	}
+	if _, err := Install(context.Background(), InstallOptions{
+		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
+	}, mkDeps()); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	res, err := Install(context.Background(), InstallOptions{
+		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
+		NaiveSelfStealPort: 9443,
+	}, mkDeps())
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if got := res.State.Hysteria2.MasqueradeURL; got != "https://127.0.0.1:9443" {
+		t.Errorf("Hysteria2.MasqueradeURL = %q, want https://127.0.0.1:9443 (must follow new SelfStealPort)", got)
+	}
+	hy2Extra := hy2.installCalls[len(hy2.installCalls)-1].Extra
+	if got, _ := hy2Extra["hysteria2.masquerade_url"].(string); got != "https://127.0.0.1:9443" {
+		t.Errorf("hysteria2.masquerade_url in Extra = %q, want https://127.0.0.1:9443", got)
+	}
+}
+
+// Conversely, an externally-pinned masquerade (e.g. a public site for
+// extra cover) must NOT be clobbered when the operator changes only
+// --naive-selfsteal-port. Mirrors TestInstallReinstallPreservesExternalXrayDest.
+func TestInstallReinstallPreservesExternalHysteria2Masquerade(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	hy2 := &fakeTransport{name: "hysteria2"}
+	mkDeps := func() Deps {
+		return Deps{
+			Rand:        &deterministicReader{},
+			PreflightFn: stubPreflight,
+			NewTransport: func(name string) (transport.Transport, error) {
+				switch name {
+				case "xray":
+					return xray, nil
+				case "naive":
+					return naive, nil
+				case "hysteria2":
+					return hy2, nil
+				}
+				return nil, errors.New("unknown")
+			},
+			StatePath: statePath,
+		}
+	}
+	if _, err := Install(context.Background(), InstallOptions{
+		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
+		Hysteria2MasqueradeURL: "https://news.ycombinator.com",
+	}, mkDeps()); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	res, err := Install(context.Background(), InstallOptions{
+		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
+		NaiveSelfStealPort: 9443,
+	}, mkDeps())
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if got := res.State.Hysteria2.MasqueradeURL; got != "https://news.ycombinator.com" {
+		t.Errorf("Hysteria2.MasqueradeURL = %q, want unchanged https://news.ycombinator.com", got)
+	}
+}
+
 func TestStatusErrorsWhenNoInstall(t *testing.T) {
 	statePath, _ := setupTestState(t)
 	deps := Deps{StatePath: statePath, NewTransport: func(string) (transport.Transport, error) { return nil, errors.New("unused") }}
