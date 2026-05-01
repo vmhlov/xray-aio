@@ -19,6 +19,7 @@ import (
 	amneziawgtransport "github.com/vmhlov/xray-aio/internal/transport/amneziawg"
 	hysteria2transport "github.com/vmhlov/xray-aio/internal/transport/hysteria2"
 	naivetransport "github.com/vmhlov/xray-aio/internal/transport/naive"
+	"rsc.io/qr"
 )
 
 // InstallOptions is the user-facing flag bag handed to Install. Zero
@@ -563,11 +564,77 @@ func buildBundle(ps *ProfileState, now time.Time) (subscribe.Bundle, error) {
 		}
 		bundle.Hysteria2URIs = []string{hy2}
 	}
+	if ps.AmneziaWG != nil {
+		entry, err := buildAmneziaWGEntry(ps)
+		if err != nil {
+			return subscribe.Bundle{}, fmt.Errorf("amneziawg entry: %w", err)
+		}
+		bundle.AmneziaWGs = []subscribe.AmneziaWGEntry{entry}
+	}
 	return bundle, nil
+}
+
+// awgPeerConfFilename / awgPeerQRFilename are the names of the
+// files writeBundle materialises in the bundle dir for the
+// AmneziaWG section. Kept as named constants so the HTML's
+// relative-URL references and the on-disk write paths agree.
+const (
+	awgPeerConfFilename = "awg0.conf"
+	awgPeerQRFilename   = "awg0.png"
+)
+
+// buildAmneziaWGEntry renders the peer-side .conf for the single
+// peer ps.AmneziaWG describes and packages it into the
+// subscribe.Bundle entry shape. The actual file bytes are
+// materialised by writeBundle later — this function only carries
+// the strings the HTML page references.
+func buildAmneziaWGEntry(ps *ProfileState) (subscribe.AmneziaWGEntry, error) {
+	awg := ps.AmneziaWG
+	cfg := amneziawgtransport.Config{
+		PrivateKey:       awg.ServerPrivateKey,
+		PeerPublicKey:    awg.PeerPublicKey,
+		PeerPresharedKey: awg.PresharedKey,
+		ServerAddress:    awg.ServerAddress,
+		PeerAddress:      awg.PeerAddress,
+		ListenPort:       awg.ListenPort,
+		MTU:              awg.MTU,
+		DNS:              awg.DNS,
+		Endpoint:         fmt.Sprintf("%s:%d", ps.Domain, awg.ListenPort),
+		Obfuscation: amneziawgtransport.Obfuscation{
+			Jc:   awg.Jc,
+			Jmin: awg.Jmin,
+			Jmax: awg.Jmax,
+			S1:   awg.S1,
+			S2:   awg.S2,
+			H1:   awg.H1,
+			H2:   awg.H2,
+			H3:   awg.H3,
+			H4:   awg.H4,
+		},
+	}
+	conf, err := amneziawgtransport.RenderPeer(cfg, awg.PeerPrivateKey, awg.ServerPublicKey)
+	if err != nil {
+		return subscribe.AmneziaWGEntry{}, fmt.Errorf("render peer: %w", err)
+	}
+	return subscribe.AmneziaWGEntry{
+		Label:        ps.Domain + " (AmneziaWG)",
+		Conf:         conf,
+		ConfURL:      awgPeerConfFilename,
+		ConfFilename: awgPeerConfFilename,
+		QRURL:        awgPeerQRFilename,
+	}, nil
 }
 
 // writeBundle materialises bundle as static files under
 // <siteRoot>/sub/<token>/. Returns the bundle directory.
+//
+// Files produced:
+//   - index.html — RenderHTML output, references the relative
+//     URLs of the AmneziaWG conf/QR files when present;
+//   - plain.txt — RenderPlainText output, URI-only (no AmneziaWG
+//     conf — see RenderPlainText doc for rationale);
+//   - <conf-filename> + <qr-filename> — one .conf + one .png per
+//     AmneziaWG entry (typically awg0.conf + awg0.png in v1).
 func writeBundle(siteRoot, token string, bundle subscribe.Bundle) (string, error) {
 	if siteRoot == "" {
 		return "", errors.New("siteRoot is empty")
@@ -593,7 +660,51 @@ func writeBundle(siteRoot, token string, bundle subscribe.Bundle) (string, error
 	if err := os.WriteFile(filepath.Join(dir, "plain.txt"), []byte(plain), 0o644); err != nil {
 		return dir, fmt.Errorf("write plain.txt: %w", err)
 	}
+	for _, e := range bundle.AmneziaWGs {
+		if err := writeAmneziaWGFiles(dir, e); err != nil {
+			return dir, fmt.Errorf("amneziawg files: %w", err)
+		}
+	}
 	return dir, nil
+}
+
+// writeAmneziaWGFiles materialises one peer's .conf + QR PNG into
+// dir using the relative names embedded in entry.ConfFilename /
+// the QRURL convention. The conf carries the peer's private key,
+// but Caddy needs to serve it under /sub/<token>/<filename>, so
+// the file mode mirrors index.html's 0o644 — the privacy boundary
+// is the unguessable subscription token in the URL path, same
+// threat model as the URIs sitting in plain.txt next to it.
+func writeAmneziaWGFiles(dir string, e subscribe.AmneziaWGEntry) error {
+	if e.ConfFilename == "" {
+		return errors.New("ConfFilename is empty")
+	}
+	if err := os.WriteFile(filepath.Join(dir, e.ConfFilename), []byte(e.Conf), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", e.ConfFilename, err)
+	}
+	if e.QRURL != "" {
+		png, err := renderQRPNG(e.Conf)
+		if err != nil {
+			return fmt.Errorf("render qr: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, e.QRURL), png, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", e.QRURL, err)
+		}
+	}
+	return nil
+}
+
+// renderQRPNG turns the given content into a Medium-EC QR code
+// PNG suitable for being scanned by mobile AmneziaWG clients.
+// Indirected through a package var so tests can substitute a
+// deterministic fake instead of pulling rsc.io/qr's full PNG
+// rendering on every assertion.
+var renderQRPNG = func(content string) ([]byte, error) {
+	code, err := qr.Encode(content, qr.M)
+	if err != nil {
+		return nil, err
+	}
+	return code.PNG(), nil
 }
 
 // subscriptionURL builds the externally visible URL where the bundle

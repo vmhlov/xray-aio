@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -269,14 +271,18 @@ func TestBuildTransportOptionsAmneziaWGStateMissing(t *testing.T) {
 }
 
 func TestInstallHomeVPNUsesNaiveAndAmneziaWGOnly(t *testing.T) {
-	t.Parallel()
-
+	// Intentionally not t.Parallel(): Install threads its
+	// StatePath through a process-wide env var (see install.go's
+	// stateEnvVar handoff), so two parallel Install calls would
+	// race on the path. Existing install_test.go follows the
+	// same convention.
 	rec := newRecordingTransports()
 	tmp := t.TempDir()
+	siteRoot := tmp + "/site"
 	res, err := Install(context.Background(), InstallOptions{
 		Profile:       "home-vpn",
 		Domain:        "vpn.example.com",
-		NaiveSiteRoot: tmp + "/site",
+		NaiveSiteRoot: siteRoot,
 	}, Deps{
 		Rand:         awgRand(7),
 		PreflightFn:  successfulPreflight,
@@ -296,8 +302,6 @@ func TestInstallHomeVPNUsesNaiveAndAmneziaWGOnly(t *testing.T) {
 	if res.State.AmneziaWG == nil {
 		t.Fatal("home-vpn must persist AmneziaWG state")
 	}
-	// Bundle for home-vpn carries Naive only in this PR. AmneziaWG
-	// .conf rendering lands in PR #26.
 	if len(res.Bundle.NaiveURIs) != 1 {
 		t.Errorf("Bundle.NaiveURIs: %v", res.Bundle.NaiveURIs)
 	}
@@ -307,11 +311,64 @@ func TestInstallHomeVPNUsesNaiveAndAmneziaWGOnly(t *testing.T) {
 	if len(res.Bundle.Hysteria2URIs) != 0 {
 		t.Errorf("Bundle.Hysteria2URIs must be empty for home-vpn: %v", res.Bundle.Hysteria2URIs)
 	}
+	if len(res.Bundle.AmneziaWGs) != 1 {
+		t.Fatalf("Bundle.AmneziaWGs: got %d, want 1", len(res.Bundle.AmneziaWGs))
+	}
+	entry := res.Bundle.AmneziaWGs[0]
+	if entry.ConfFilename != "awg0.conf" || entry.QRURL != "awg0.png" {
+		t.Errorf("entry filenames: %+v", entry)
+	}
+	if !strings.Contains(entry.Conf, "[Interface]") || !strings.Contains(entry.Conf, "Endpoint = vpn.example.com:") {
+		t.Errorf("entry.Conf missing expected fields:\n%s", entry.Conf)
+	}
+	// Server private key MUST NOT appear in the peer-side .conf.
+	if strings.Contains(entry.Conf, res.State.AmneziaWG.ServerPrivateKey) {
+		t.Error("server private key leaked into peer .conf")
+	}
+
+	// Bundle dir on disk: index.html + plain.txt + awg0.conf + awg0.png.
+	bundleDir := filepath.Join(siteRoot, "sub", res.State.Subscription.Token)
+	for _, name := range []string{"index.html", "plain.txt", "awg0.conf", "awg0.png"} {
+		fi, err := os.Stat(filepath.Join(bundleDir, name))
+		if err != nil {
+			t.Errorf("stat %s: %v", name, err)
+			continue
+		}
+		if fi.Size() == 0 {
+			t.Errorf("%s is empty", name)
+		}
+	}
+	confBytes, err := os.ReadFile(filepath.Join(bundleDir, "awg0.conf"))
+	if err != nil {
+		t.Fatalf("read awg0.conf: %v", err)
+	}
+	if string(confBytes) != entry.Conf {
+		t.Error("on-disk awg0.conf does not match Bundle.AmneziaWGs[0].Conf")
+	}
+	// QR PNG must be a real PNG (8-byte magic header).
+	pngBytes, err := os.ReadFile(filepath.Join(bundleDir, "awg0.png"))
+	if err != nil {
+		t.Fatalf("read awg0.png: %v", err)
+	}
+	if len(pngBytes) < 8 || string(pngBytes[:8]) != "\x89PNG\r\n\x1a\n" {
+		t.Errorf("awg0.png is not a valid PNG (first 8 bytes: %x)", pngBytes[:min(8, len(pngBytes))])
+	}
+	// HTML page must reference both relative URLs.
+	htmlBytes, err := os.ReadFile(filepath.Join(bundleDir, "index.html"))
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	html := string(htmlBytes)
+	for _, want := range []string{`href="awg0.conf"`, `src="awg0.png"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html missing %q", want)
+		}
+	}
 }
 
 func TestInstallHomeVPNReinstallPreservesAmneziaWGKeys(t *testing.T) {
-	t.Parallel()
-
+	// Intentionally not t.Parallel(): see
+	// TestInstallHomeVPNUsesNaiveAndAmneziaWGOnly above.
 	rec := newRecordingTransports()
 	tmp := t.TempDir()
 	siteRoot := tmp + "/site"

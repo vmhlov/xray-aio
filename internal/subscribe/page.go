@@ -15,13 +15,49 @@ type Bundle struct {
 	VLESSURIs     []string
 	NaiveURIs     []string
 	Hysteria2URIs []string
-	GeneratedAt   string // RFC 3339 timestamp, optional
+	// AmneziaWGs carries one entry per peer config rendered into
+	// the bundle. v1 ships a single entry; multi-peer arrives in
+	// Phase 3 UX. Unlike the URI-shaped transports above, an
+	// AmneziaWG client consumes a multi-line .conf — so the entry
+	// also references the relative URLs of the staged conf and QR
+	// files (writeBundle materialises them next to index.html).
+	AmneziaWGs  []AmneziaWGEntry
+	GeneratedAt string // RFC 3339 timestamp, optional
+}
+
+// AmneziaWGEntry is one peer's worth of importable AmneziaWG
+// material. The actual file bytes live alongside the rendered
+// index.html under the same /sub/<token>/ directory; the entry
+// carries the inline conf text (for copy-paste) and the relative
+// URLs (for the download / QR <img> in the HTML page).
+type AmneziaWGEntry struct {
+	// Label is shown above the conf block in the rendered page,
+	// e.g. "vmh-aio.site (AmneziaWG)".
+	Label string
+	// Conf is the full peer-side .conf text. Rendered as a
+	// <pre><code>…</code></pre> block; whitespace and newlines
+	// are preserved.
+	Conf string
+	// ConfURL is the relative URL of the downloadable .conf
+	// file inside the bundle dir, typically "awg0.conf".
+	ConfURL string
+	// ConfFilename is what the client receives when it follows
+	// ConfURL — also drives the <a download="…"> attribute.
+	ConfFilename string
+	// QRURL is the relative URL of the QR PNG inside the bundle
+	// dir, typically "awg0.png".
+	QRURL string
 }
 
 // RenderPlainText returns the subscription body in the format
 // understood by clients that fetch <subscribe-url>?plain=1 — one URI
 // per line. Mainstream clients (NekoBox, Hiddify, Happ) accept this
 // shape directly.
+//
+// AmneziaWG entries are intentionally NOT included here: the
+// subscription clients that fetch ?plain=1 are URI-shaped and would
+// not know how to consume a multi-line .conf. AmneziaWG operators
+// fetch the .conf directly from the bundle dir or scan the QR.
 func RenderPlainText(b Bundle) (string, error) {
 	if len(b.VLESSURIs)+len(b.NaiveURIs)+len(b.Hysteria2URIs) == 0 {
 		return "", errors.New("Bundle has no URIs")
@@ -91,8 +127,11 @@ const htmlTemplate = `<!doctype html>
   ol { padding-left: 1.25rem; }
   li { margin: .9rem 0; }
   code { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; padding: .15rem .35rem; border-radius: .25rem; background: rgba(127,127,127,.12); }
+  pre { background: rgba(127,127,127,.12); padding: .75rem 1rem; border-radius: .35rem; overflow-x: auto; font-size: .85rem; line-height: 1.4; }
+  pre code { padding: 0; background: transparent; word-break: normal; white-space: pre; }
   .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .25rem; }
   a.btn { display: inline-block; padding: .35rem .75rem; border: 1px solid currentColor; border-radius: .35rem; text-decoration: none; font-size: .85rem; }
+  .qr { max-width: 12rem; border: 1px solid currentColor; border-radius: .35rem; padding: .25rem; background: #fff; }
   .meta { color: #666; font-size: .8rem; }
   @media (prefers-color-scheme: dark) {
     body { background: #111; color: #ddd; }
@@ -103,7 +142,7 @@ const htmlTemplate = `<!doctype html>
 <body>
 <h1>{{.Label}} subscription</h1>
 <p class="meta">
-  Use the URIs below in your client (NekoBox, Hiddify, Streisand, Happ).
+  Use the URIs and configs below in your client (NekoBox, Hiddify, Streisand, Happ, AmneziaVPN).
   Treat this page as a credential — anyone who sees it can connect.
 </p>
 {{- if .VLESSURIs}}
@@ -142,6 +181,29 @@ const htmlTemplate = `<!doctype html>
     <div class="row">
       <a class="btn" href="{{safeURL $u}}">Open in default client</a>
     </div>
+  </li>
+{{end}}
+</ol>
+{{- end}}
+{{- if .AmneziaWGs}}
+<h2>AmneziaWG</h2>
+<p class="meta">
+  Import the .conf into the AmneziaVPN client (NOT vanilla WireGuard — the obfuscation lines are AmneziaWG-specific).
+  Use either the QR scan, the download link, or copy the text below.
+</p>
+<ol>
+{{range .AmneziaWGs}}
+  <li>
+    {{- if .Label}}<div class="meta">{{.Label}}</div>{{end}}
+    <pre><code>{{.Conf}}</code></pre>
+    <div class="row">
+      <a class="btn" href="{{safeURL .ConfURL}}" download="{{.ConfFilename}}">Download {{.ConfFilename}}</a>
+    </div>
+    {{- if .QRURL}}
+    <div class="row">
+      <img class="qr" alt="QR for {{.ConfFilename}}" src="{{safeURL .QRURL}}">
+    </div>
+    {{- end}}
   </li>
 {{end}}
 </ol>
