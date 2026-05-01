@@ -16,6 +16,7 @@ import (
 	"github.com/vmhlov/xray-aio/internal/state"
 	"github.com/vmhlov/xray-aio/internal/subscribe"
 	"github.com/vmhlov/xray-aio/internal/transport"
+	amneziawgtransport "github.com/vmhlov/xray-aio/internal/transport/amneziawg"
 	hysteria2transport "github.com/vmhlov/xray-aio/internal/transport/hysteria2"
 	naivetransport "github.com/vmhlov/xray-aio/internal/transport/naive"
 )
@@ -77,6 +78,27 @@ type InstallOptions struct {
 	// site definition. Linux routes the dial back via loopback
 	// automatically.
 	Hysteria2MasqueradeURL string
+
+	// AmneziaWGListenPort overrides the AmneziaWG UDP listen port.
+	// Only consulted when the profile contains amneziawg. Default:
+	// [amneziawg.DefaultListenPort] (51842).
+	AmneziaWGListenPort int
+
+	// AmneziaWGServerAddress / AmneziaWGPeerAddress override the
+	// in-tunnel CIDR addresses on the server (e.g. "10.66.66.1/24")
+	// and peer (e.g. "10.66.66.2/32") sides of the WireGuard link.
+	// Defaults: [amneziawg.DefaultServerAddress] /
+	// [amneziawg.DefaultPeerAddress].
+	AmneziaWGServerAddress string
+	AmneziaWGPeerAddress   string
+
+	// AmneziaWGMTU overrides the peer-side MTU value rendered into
+	// the .conf. Default: [amneziawg.DefaultMTU] (1380).
+	AmneziaWGMTU int
+
+	// AmneziaWGDNS overrides the peer-side DNS server rendered into
+	// the .conf. Default: [amneziawg.DefaultDNS] (1.1.1.1).
+	AmneziaWGDNS string
 
 	// SkipPreflightOnError, when true, downgrades preflight errors
 	// to warnings so install proceeds. Reserved for the operator
@@ -266,6 +288,60 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 				ps.Hysteria2.MasqueradeURL = fmt.Sprintf("https://%s:%d", opts.Domain, ps.Naive.SelfStealPort)
 			}
 		}
+
+		if profileNeedsAmneziaWG(ps.Profile) {
+			// AmneziaWG re-install policy: keys + obfuscation params
+			// MUST be preserved across re-runs (the peer's already
+			// distributed .conf becomes invalid otherwise). We
+			// only refresh the ergonomic knobs (listen port, in-
+			// tunnel addresses, MTU, DNS).
+			//
+			// First-run on an existing state.json that didn't have
+			// an AmneziaWG block populates one fresh. The plain
+			// generatePlan path also lands here when an operator
+			// switches to home-vpn after a fresh-install on
+			// home-stealth (rotate-style flow), but that's not
+			// supported in v1 — `Install` errors out with the
+			// "state holds profile %q" guard above before reaching
+			// this branch.
+			if ps.AmneziaWG == nil {
+				awg, err := generateAmneziaWGStateFrom(opts, deps.Rand)
+				if err != nil {
+					return nil, fmt.Errorf("amneziawg: %w", err)
+				}
+				ps.AmneziaWG = awg
+			}
+			if opts.AmneziaWGListenPort != 0 {
+				ps.AmneziaWG.ListenPort = opts.AmneziaWGListenPort
+			}
+			if ps.AmneziaWG.ListenPort == 0 {
+				ps.AmneziaWG.ListenPort = amneziawgtransport.DefaultListenPort
+			}
+			if opts.AmneziaWGServerAddress != "" {
+				ps.AmneziaWG.ServerAddress = opts.AmneziaWGServerAddress
+			}
+			if ps.AmneziaWG.ServerAddress == "" {
+				ps.AmneziaWG.ServerAddress = amneziawgtransport.DefaultServerAddress
+			}
+			if opts.AmneziaWGPeerAddress != "" {
+				ps.AmneziaWG.PeerAddress = opts.AmneziaWGPeerAddress
+			}
+			if ps.AmneziaWG.PeerAddress == "" {
+				ps.AmneziaWG.PeerAddress = amneziawgtransport.DefaultPeerAddress
+			}
+			if opts.AmneziaWGMTU != 0 {
+				ps.AmneziaWG.MTU = opts.AmneziaWGMTU
+			}
+			if ps.AmneziaWG.MTU == 0 {
+				ps.AmneziaWG.MTU = amneziawgtransport.DefaultMTU
+			}
+			if opts.AmneziaWGDNS != "" {
+				ps.AmneziaWG.DNS = opts.AmneziaWGDNS
+			}
+			if ps.AmneziaWG.DNS == "" {
+				ps.AmneziaWG.DNS = amneziawgtransport.DefaultDNS
+			}
+		}
 	}
 
 	// Phase 3: install each transport in profile order.
@@ -392,31 +468,58 @@ func buildTransportOptions(name string, ps *ProfileState) (transport.Options, er
 			Email:  ps.Email,
 			Extra:  extra,
 		}, nil
+	case "amneziawg":
+		if ps.AmneziaWG == nil {
+			return transport.Options{}, errors.New("amneziawg state missing")
+		}
+		awg := ps.AmneziaWG
+		extra := map[string]any{
+			"amneziawg.private_key":     awg.ServerPrivateKey,
+			"amneziawg.peer_public_key": awg.PeerPublicKey,
+			"amneziawg.peer_preshared":  awg.PresharedKey,
+			"amneziawg.server_address":  awg.ServerAddress,
+			"amneziawg.peer_address":    awg.PeerAddress,
+			"amneziawg.listen_port":     awg.ListenPort,
+			"amneziawg.mtu":             awg.MTU,
+			"amneziawg.dns":             awg.DNS,
+			"amneziawg.jc":              awg.Jc,
+			"amneziawg.jmin":            awg.Jmin,
+			"amneziawg.jmax":            awg.Jmax,
+			"amneziawg.s1":              awg.S1,
+			"amneziawg.s2":              awg.S2,
+			"amneziawg.h1":              awg.H1,
+			"amneziawg.h2":              awg.H2,
+			"amneziawg.h3":              awg.H3,
+			"amneziawg.h4":              awg.H4,
+		}
+		return transport.Options{
+			Domain: ps.Domain,
+			Email:  ps.Email,
+			Extra:  extra,
+		}, nil
 	default:
 		return transport.Options{}, fmt.Errorf("orchestrator does not know how to configure %q", name)
 	}
 }
 
-// buildBundle renders the per-client URI bundle from ps. Phase 1.6
-// produces one VLESS URI (Vision mode) and one Naive URI.
+// buildBundle renders the per-client URI bundle from ps. Each
+// transport contributes its URI(s) only when the corresponding
+// state slice is populated, so home-stealth produces VLESS+Naive,
+// home-mobile adds Hysteria2, and home-vpn produces Naive only
+// (the AmneziaWG .conf material is rendered into the bundle by
+// PR #26 in the Phase 2.2 sequence — until then home-vpn's bundle
+// page advertises just the Naive endpoint).
+//
+// Naive is required: the bundle is served from /sub/<token>/ on
+// the Naive listener, so a profile without Naive has no place to
+// stage the page.
 func buildBundle(ps *ProfileState, now time.Time) (subscribe.Bundle, error) {
-	if ps.Xray == nil || ps.Naive == nil {
-		return subscribe.Bundle{}, errors.New("Xray/Naive state required for bundle")
+	if ps.Naive == nil {
+		return subscribe.Bundle{}, errors.New("Naive state required for bundle (it hosts /sub/)")
 	}
-	if len(ps.Xray.ShortIDs) == 0 {
-		return subscribe.Bundle{}, errors.New("no short ids")
-	}
-	vless, err := subscribe.VLESSURI(subscribe.VLESSConfig{
-		UUID:      ps.Xray.UUID,
-		Domain:    ps.Domain,
-		Port:      ps.Xray.ListenPort,
-		PublicKey: ps.Xray.PublicKey,
-		ShortID:   ps.Xray.ShortIDs[0],
-		Mode:      ps.Xray.Mode,
-		Label:     ps.Domain + " (REALITY)",
-	})
-	if err != nil {
-		return subscribe.Bundle{}, fmt.Errorf("vless uri: %w", err)
+	bundle := subscribe.Bundle{
+		Label:       "xray-aio: " + ps.Domain,
+		GeneratedAt: now.UTC().Format(time.RFC3339),
 	}
 	naive, err := subscribe.NaiveURI(subscribe.NaiveConfig{
 		Username: ps.Naive.Username,
@@ -428,11 +531,25 @@ func buildBundle(ps *ProfileState, now time.Time) (subscribe.Bundle, error) {
 	if err != nil {
 		return subscribe.Bundle{}, fmt.Errorf("naive uri: %w", err)
 	}
-	bundle := subscribe.Bundle{
-		Label:       "xray-aio: " + ps.Domain,
-		VLESSURIs:   []string{vless},
-		NaiveURIs:   []string{naive},
-		GeneratedAt: now.UTC().Format(time.RFC3339),
+	bundle.NaiveURIs = []string{naive}
+
+	if ps.Xray != nil {
+		if len(ps.Xray.ShortIDs) == 0 {
+			return subscribe.Bundle{}, errors.New("no short ids")
+		}
+		vless, err := subscribe.VLESSURI(subscribe.VLESSConfig{
+			UUID:      ps.Xray.UUID,
+			Domain:    ps.Domain,
+			Port:      ps.Xray.ListenPort,
+			PublicKey: ps.Xray.PublicKey,
+			ShortID:   ps.Xray.ShortIDs[0],
+			Mode:      ps.Xray.Mode,
+			Label:     ps.Domain + " (REALITY)",
+		})
+		if err != nil {
+			return subscribe.Bundle{}, fmt.Errorf("vless uri: %w", err)
+		}
+		bundle.VLESSURIs = []string{vless}
 	}
 	if ps.Hysteria2 != nil {
 		hy2, err := hysteria2transport.RenderURI(hysteria2transport.URIInputs{

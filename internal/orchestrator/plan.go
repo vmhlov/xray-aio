@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/vmhlov/xray-aio/internal/subscribe"
+	amneziawgtransport "github.com/vmhlov/xray-aio/internal/transport/amneziawg"
 	hysteria2transport "github.com/vmhlov/xray-aio/internal/transport/hysteria2"
 	naivetransport "github.com/vmhlov/xray-aio/internal/transport/naive"
 	xraytransport "github.com/vmhlov/xray-aio/internal/transport/xray"
@@ -21,23 +22,15 @@ import (
 // Defaults applied here:
 //   - Xray: Vision mode, port 443, dest 127.0.0.1:8443, one short id.
 //   - Naive: 16-byte hex username/password, port 8444.
+//   - Hysteria 2: 32-byte base64.RawURL password, port 443/UDP,
+//     selfsteal-domain masquerade.
+//   - AmneziaWG: Curve25519 server + peer keypairs, 32-byte PSK,
+//     randomized obfuscation params, port 51842/UDP, /24 server
+//     and /32 peer carved out of 10.66.66.0/24.
 //   - Subscription: 32-byte HMAC secret, default client id "default".
 func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 	if opts.Domain == "" {
 		return nil, errors.New("Domain is required")
-	}
-
-	uuid, err := generateUUIDFrom(rng)
-	if err != nil {
-		return nil, fmt.Errorf("xray uuid: %w", err)
-	}
-	keys, err := generateX25519From(rng)
-	if err != nil {
-		return nil, fmt.Errorf("xray x25519: %w", err)
-	}
-	shortID, err := randomHex(rng, 8)
-	if err != nil {
-		return nil, fmt.Errorf("xray short id: %w", err)
 	}
 
 	naiveUser, err := randomHex(rng, 8)
@@ -59,10 +52,6 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 		return nil, fmt.Errorf("subscription token: %w", err)
 	}
 
-	xrayPort := opts.XrayPort
-	if xrayPort == 0 {
-		xrayPort = xraytransport.DefaultListenPort
-	}
 	naivePort := opts.NaivePort
 	if naivePort == 0 {
 		naivePort = defaultNaivePort
@@ -79,24 +68,11 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 	if naiveSelfStealRoot == "" {
 		naiveSelfStealRoot = naivetransport.DefaultSelfStealRoot
 	}
-	dest := opts.XrayDest
-	if dest == "" {
-		dest = fmt.Sprintf("127.0.0.1:%d", naiveSelfStealPort)
-	}
 
 	ps := &ProfileState{
 		Profile: opts.Profile,
 		Domain:  opts.Domain,
 		Email:   opts.Email,
-		Xray: &XrayState{
-			Mode:       string(xraytransport.ModeVision),
-			UUID:       uuid,
-			PrivateKey: keys.Private,
-			PublicKey:  keys.Public,
-			ShortIDs:   []string{shortID},
-			ListenPort: xrayPort,
-			Dest:       dest,
-		},
 		Naive: &NaiveState{
 			Username:      naiveUser,
 			Password:      naivePass,
@@ -110,6 +86,38 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 			DefaultClientID: clientID,
 			Token:           token,
 		},
+	}
+
+	if profileNeedsXray(opts.Profile) {
+		uuid, err := generateUUIDFrom(rng)
+		if err != nil {
+			return nil, fmt.Errorf("xray uuid: %w", err)
+		}
+		keys, err := generateX25519From(rng)
+		if err != nil {
+			return nil, fmt.Errorf("xray x25519: %w", err)
+		}
+		shortID, err := randomHex(rng, 8)
+		if err != nil {
+			return nil, fmt.Errorf("xray short id: %w", err)
+		}
+		xrayPort := opts.XrayPort
+		if xrayPort == 0 {
+			xrayPort = xraytransport.DefaultListenPort
+		}
+		dest := opts.XrayDest
+		if dest == "" {
+			dest = fmt.Sprintf("127.0.0.1:%d", naiveSelfStealPort)
+		}
+		ps.Xray = &XrayState{
+			Mode:       string(xraytransport.ModeVision),
+			UUID:       uuid,
+			PrivateKey: keys.Private,
+			PublicKey:  keys.Public,
+			ShortIDs:   []string{shortID},
+			ListenPort: xrayPort,
+			Dest:       dest,
+		}
 	}
 
 	if profileNeedsHysteria2(opts.Profile) {
@@ -141,7 +149,81 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 		}
 	}
 
+	if profileNeedsAmneziaWG(opts.Profile) {
+		awg, err := generateAmneziaWGStateFrom(opts, rng)
+		if err != nil {
+			return nil, fmt.Errorf("amneziawg: %w", err)
+		}
+		ps.AmneziaWG = awg
+	}
+
 	return ps, nil
+}
+
+// generateAmneziaWGStateFrom produces a fresh AmneziaWGState from the
+// given rng. Two Curve25519 keypairs (server + single peer), one
+// 32-byte PSK, a random obfuscation block, and the address/port
+// triple are drawn here. CLI overrides on opts (listen-port,
+// addresses, MTU, DNS) are applied; otherwise package defaults from
+// internal/transport/amneziawg are used.
+func generateAmneziaWGStateFrom(opts InstallOptions, rng io.Reader) (*AmneziaWGState, error) {
+	server, err := amneziawgtransport.GenerateX25519FromReader(rng)
+	if err != nil {
+		return nil, fmt.Errorf("server keys: %w", err)
+	}
+	peer, err := amneziawgtransport.GenerateX25519FromReader(rng)
+	if err != nil {
+		return nil, fmt.Errorf("peer keys: %w", err)
+	}
+	psk, err := amneziawgtransport.GeneratePresharedKeyFromReader(rng)
+	if err != nil {
+		return nil, fmt.Errorf("preshared: %w", err)
+	}
+	obf, err := amneziawgtransport.GenerateObfuscationFromReader(rng)
+	if err != nil {
+		return nil, fmt.Errorf("obfuscation: %w", err)
+	}
+	listenPort := opts.AmneziaWGListenPort
+	if listenPort == 0 {
+		listenPort = amneziawgtransport.DefaultListenPort
+	}
+	serverAddr := opts.AmneziaWGServerAddress
+	if serverAddr == "" {
+		serverAddr = amneziawgtransport.DefaultServerAddress
+	}
+	peerAddr := opts.AmneziaWGPeerAddress
+	if peerAddr == "" {
+		peerAddr = amneziawgtransport.DefaultPeerAddress
+	}
+	mtu := opts.AmneziaWGMTU
+	if mtu == 0 {
+		mtu = amneziawgtransport.DefaultMTU
+	}
+	dns := opts.AmneziaWGDNS
+	if dns == "" {
+		dns = amneziawgtransport.DefaultDNS
+	}
+	return &AmneziaWGState{
+		ServerPrivateKey: server.Private,
+		ServerPublicKey:  server.Public,
+		PeerPrivateKey:   peer.Private,
+		PeerPublicKey:    peer.Public,
+		PresharedKey:     psk,
+		ListenPort:       listenPort,
+		ServerAddress:    serverAddr,
+		PeerAddress:      peerAddr,
+		MTU:              mtu,
+		DNS:              dns,
+		Jc:               obf.Jc,
+		Jmin:             obf.Jmin,
+		Jmax:             obf.Jmax,
+		S1:               obf.S1,
+		S2:               obf.S2,
+		H1:               obf.H1,
+		H2:               obf.H2,
+		H3:               obf.H3,
+		H4:               obf.H4,
+	}, nil
 }
 
 // generateHysteria2PasswordFrom mirrors hysteria2.GenerateAuthPassword
@@ -157,22 +239,33 @@ func generateHysteria2PasswordFrom(rng io.Reader) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
-// profileNeedsHysteria2 reports whether the named profile contains the
-// hysteria2 transport. Lookup goes through the package's profile
-// registry so a future profile that adds hy2 picks up the right
-// generation behaviour automatically.
-func profileNeedsHysteria2(name string) bool {
-	p, ok := profiles[name]
+// profileHasTransport reports whether the named profile contains a
+// transport with the given registry id. Returns false for unknown
+// profiles. Used by the various profileNeedsX helpers below.
+func profileHasTransport(profile, transportName string) bool {
+	p, ok := profiles[profile]
 	if !ok {
 		return false
 	}
 	for _, t := range p.Transports {
-		if t == "hysteria2" {
+		if t == transportName {
 			return true
 		}
 	}
 	return false
 }
+
+// profileNeedsXray reports whether the named profile contains the
+// xray transport.
+func profileNeedsXray(name string) bool { return profileHasTransport(name, "xray") }
+
+// profileNeedsHysteria2 reports whether the named profile contains the
+// hysteria2 transport.
+func profileNeedsHysteria2(name string) bool { return profileHasTransport(name, "hysteria2") }
+
+// profileNeedsAmneziaWG reports whether the named profile contains
+// the amneziawg transport.
+func profileNeedsAmneziaWG(name string) bool { return profileHasTransport(name, "amneziawg") }
 
 const (
 	defaultNaivePort = 8444
