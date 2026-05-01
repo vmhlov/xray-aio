@@ -213,7 +213,12 @@ jobs:
       - name: Smoke test (amd64 binary `awg --version` + glibc baseline)
         run: |
           set -euo pipefail
-          chmod +x dist/awg-linux-amd64
+          # The build runs as root inside debian:bullseye-slim, so the
+          # files in dist/ are root-owned on the host runner. We do not
+          # `chmod +x` here — gcc/make already produces 0755 binaries,
+          # and chmod from the non-root runner user fails with EPERM
+          # (only the file owner can call chmod(2) on Linux). The
+          # softprops upload step does not care about ownership.
           file dist/awg-linux-amd64
           file dist/awg-linux-arm64
           # `awg` is the renamed `wg`; a bare `--version` writes to
