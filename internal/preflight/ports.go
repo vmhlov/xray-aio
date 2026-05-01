@@ -76,6 +76,12 @@ func checkUDPPort(ctx context.Context, port int, name string) Check {
 // AmneziaWG IS the home-vpn profile's data plane — a busy port is a
 // hard error so [Install] does not silently land in a state where
 // systemd boots the unit but the kernel rejects bind().
+//
+// Re-install case: when the operator runs Install on an already
+// configured host, our own xray-aio-amneziawg unit is still holding
+// the port (Phase 3 restart has not happened yet). Mirror the TCP
+// path's [portHolderUnit] escape hatch so the steady-state
+// re-install does not abort here on EADDRINUSE — see [udpPortHolderUnit].
 func checkAmneziaWGUDP(ctx context.Context, port int) Check {
 	const name = "amneziawg-udp"
 	addr := net.JoinHostPort("", strconv.Itoa(port))
@@ -84,6 +90,9 @@ func checkAmneziaWGUDP(ctx context.Context, port int) Check {
 	if err != nil {
 		if isPermissionDenied(err) && !isRoot() {
 			return Check{Name: name, Status: StatusWarn, Message: fmt.Sprintf("udp/%d: needs root to probe (re-run as root)", port)}
+		}
+		if unit := udpPortHolderUnit(port); unit != "" {
+			return Check{Name: name, Status: StatusOK, Message: fmt.Sprintf("udp/%d held by %s (steady state)", port, unit)}
 		}
 		return Check{Name: name, Status: StatusError, Message: fmt.Sprintf("udp/%d in use: %v", port, err)}
 	}
@@ -106,11 +115,17 @@ func isPermissionDenied(err error) bool {
 // every failure mode returns "" rather than surfacing an error, so
 // callers fall through to the normal EADDRINUSE → StatusError path.
 //
-// Mocked in tests via [setPortHolderUnit].
-var portHolderUnit = lookupPortHolderUnit
+// Mocked in tests via direct assignment.
+var portHolderUnit = func(port int) string { return lookupHolderUnit(port, "tcp") }
 
-func lookupPortHolderUnit(port int) string {
-	pid, ok := findListeningPID(port)
+// udpPortHolderUnit is the UDP-side counterpart used by
+// [checkAmneziaWGUDP] so a re-install does not flag our own running
+// xray-aio-amneziawg as a foreign port conflict. Same fail-closed
+// contract as [portHolderUnit].
+var udpPortHolderUnit = func(port int) string { return lookupHolderUnit(port, "udp") }
+
+func lookupHolderUnit(port int, proto string) string {
+	pid, ok := findHolderPID(port, proto)
 	if !ok {
 		return ""
 	}
@@ -124,12 +139,13 @@ func lookupPortHolderUnit(port int) string {
 	return unit
 }
 
-// findListeningPID returns the PID of the process holding a LISTEN
-// socket on TCP `port` (any local address, IPv4 or IPv6). Walks
-// /proc/net/tcp{,6} for the matching inode, then /proc/<pid>/fd/* to
-// resolve which process owns it. Returns (0, false) on any failure.
-func findListeningPID(port int) (int, bool) {
-	inode, ok := findListeningInode(port)
+// findHolderPID returns the PID of the process holding a socket on
+// `port` for the given proto ("tcp" or "udp"). Walks the appropriate
+// /proc/net/<proto>{,6} table for the matching inode, then
+// /proc/<pid>/fd/* to resolve which process owns it. Returns
+// (0, false) on any failure.
+func findHolderPID(port int, proto string) (int, bool) {
+	inode, ok := findHolderInode(port, proto)
 	if !ok {
 		return 0, false
 	}
@@ -165,21 +181,28 @@ func findListeningPID(port int) (int, bool) {
 	return 0, false
 }
 
-// findListeningInode parses /proc/net/tcp and /proc/net/tcp6 for the
-// first row whose local address ends with `:<port>` (in proc-fs's
-// uppercase-hex encoding, zero-padded to four nibbles) and whose
-// state is 0A (LISTEN). Returns the inode column as a decimal
-// string.
-func findListeningInode(port int) (string, bool) {
+// findHolderInode parses /proc/net/<proto> and /proc/net/<proto>6
+// for the first row whose local address ends with `:<port>` (in
+// proc-fs's uppercase-hex encoding, zero-padded to four nibbles).
+// Returns the inode column as a decimal string.
+//
+// For TCP we additionally require state "0A" (LISTEN) so half-open /
+// established sockets to the same port do not match. UDP is
+// stateless — the kernel reuses TCP state values and a bound but
+// unconnected socket reports "07" (TCP_CLOSE) — so we accept any
+// state for UDP.
+func findHolderInode(port int, proto string) (string, bool) {
+	var stateFilter string
+	if proto == "tcp" {
+		stateFilter = "0A"
+	}
 	// Linux formats the port as %04X (e.g. 80 → "0050", 443 →
 	// "01BB", 8444 → "20FC"). Match the kernel's width exactly so
 	// 2-digit-hex ports are not silently dropped by an
 	// unpadded compare.
 	hexPort := fmt.Sprintf("%04X", port)
-	for _, path := range []string{
-		filepath.Join(procRoot, "net", "tcp"),
-		filepath.Join(procRoot, "net", "tcp6"),
-	} {
+	for _, suffix := range []string{"", "6"} {
+		path := filepath.Join(procRoot, "net", proto+suffix)
 		f, err := os.Open(path)
 		if err != nil {
 			continue
@@ -193,11 +216,10 @@ func findListeningInode(port int) (string, bool) {
 			if len(fields) < 10 {
 				continue
 			}
-			localAddr := fields[1]
-			state := fields[3]
-			if state != "0A" {
+			if stateFilter != "" && fields[3] != stateFilter {
 				continue
 			}
+			localAddr := fields[1]
 			colon := strings.LastIndex(localAddr, ":")
 			if colon < 0 {
 				continue
@@ -238,7 +260,7 @@ func readSystemdUnit(pid int) (string, bool) {
 	return "", false
 }
 
-// procRoot is the root used by [findListeningPID] /
-// [readSystemdUnit] when reading proc-fs. Overridable in tests via
-// [setProcRoot].
+// procRoot is the root used by [findHolderPID] / [readSystemdUnit]
+// when reading proc-fs. Overridable in tests via direct
+// assignment.
 var procRoot = "/proc"

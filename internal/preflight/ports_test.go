@@ -146,14 +146,93 @@ func TestLookupPortHolderUnitWithFakeProc(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got := lookupPortHolderUnit(tc.port)
+			got := lookupHolderUnit(tc.port, "tcp")
 			if got != "xray-aio-naive" {
-				t.Fatalf("lookupPortHolderUnit(%d) = %q; want xray-aio-naive", tc.port, got)
+				t.Fatalf("lookupHolderUnit(%d, tcp) = %q; want xray-aio-naive", tc.port, got)
 			}
 
 			// Negative: a port nobody is listening on returns "".
-			if got := lookupPortHolderUnit(9999); got != "" {
-				t.Fatalf("lookupPortHolderUnit(9999) = %q; want empty", got)
+			if got := lookupHolderUnit(9999, "tcp"); got != "" {
+				t.Fatalf("lookupHolderUnit(9999, tcp) = %q; want empty", got)
+			}
+		})
+	}
+}
+
+func TestLookupHolderUnitWithFakeProcUDP(t *testing.T) {
+	// Same proc-fs shape as the TCP test, but populated under
+	// /proc/net/udp{,6}. AmneziaWG re-install needs lookupHolderUnit
+	// with proto="udp" to find our amneziawg-go process via its UDP
+	// listen socket. Linux reports bound-but-unconnected UDP sockets
+	// with state "07" (TCP_CLOSE \u2014 UDP reuses TCP state values), so
+	// findHolderInode skips the state filter for UDP and the test
+	// pins that contract.
+	cases := []struct {
+		name     string
+		port     int
+		listenOn string
+	}{
+		{"port-51842-udp4", 51842, "udp"},
+		{"port-51842-udp6", 51842, "udp6"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			prevRoot := procRoot
+			procRoot = root
+			t.Cleanup(func() { procRoot = prevRoot })
+
+			const inode = "777"
+			netDir := filepath.Join(root, "net")
+			if err := os.MkdirAll(netDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			hexPort := fmt.Sprintf("%04X", tc.port)
+			localAddr := "00000000:" + hexPort
+			if tc.listenOn == "udp6" {
+				localAddr = "00000000000000000000000000000000:" + hexPort
+			}
+			// State 07 = TCP_CLOSE — what an unconnected bound UDP
+			// socket reports. The parser MUST accept this even
+			// though it would not be a LISTEN row in the TCP table.
+			udpRow := "  0: " + localAddr + " 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 " + inode + " 1 0 100 0\n"
+			udpHeader := "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+			udpContent := udpHeader
+			udp6Content := udpHeader
+			if tc.listenOn == "udp6" {
+				udp6Content += udpRow
+			} else {
+				udpContent += udpRow
+			}
+			if err := os.WriteFile(filepath.Join(netDir, "udp"), []byte(udpContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(netDir, "udp6"), []byte(udp6Content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			pidDir := filepath.Join(root, "9876")
+			fdDir := filepath.Join(pidDir, "fd")
+			if err := os.MkdirAll(fdDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("socket:["+inode+"]", filepath.Join(fdDir, "4")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(pidDir, "cgroup"),
+				[]byte("0::/system.slice/xray-aio-amneziawg.service\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			got := lookupHolderUnit(tc.port, "udp")
+			if got != "xray-aio-amneziawg" {
+				t.Fatalf("lookupHolderUnit(%d, udp) = %q; want xray-aio-amneziawg", tc.port, got)
+			}
+			// And the TCP path on the same fake proc must NOT
+			// match — the udp tables are not searched for "tcp"
+			// proto. This pins the proto routing.
+			if got := lookupHolderUnit(tc.port, "tcp"); got != "" {
+				t.Errorf("lookupHolderUnit(%d, tcp) over UDP-only proc = %q; want empty (proto routing must not bleed)", tc.port, got)
 			}
 		})
 	}
@@ -176,6 +255,16 @@ func TestCheckAmneziaWGUDPBusyIsHardError(t *testing.T) {
 	// for hysteria 2 / quic). Bind a UDP socket ourselves and assert
 	// the check surfaces StatusError, not StatusWarn — this is the
 	// behavioural contract Install relies on to abort early.
+	//
+	// udpPortHolderUnit returns "" for ports nobody bound through a
+	// systemd unit — stub it explicitly so this test does not
+	// depend on the host's /proc state (and so the steady-state
+	// re-install escape hatch added in fix/preflight-amneziawg-self-bind
+	// does not silently rescue a bind from a non-xray-aio holder).
+	prev := udpPortHolderUnit
+	udpPortHolderUnit = func(int) string { return "" }
+	t.Cleanup(func() { udpPortHolderUnit = prev })
+
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +277,35 @@ func TestCheckAmneziaWGUDPBusyIsHardError(t *testing.T) {
 	}
 	if !contains(c.Message, "in use") {
 		t.Errorf("message=%q; want it to mention `in use`", c.Message)
+	}
+}
+
+func TestCheckAmneziaWGUDPHeldByOurUnitDowngradesToOK(t *testing.T) {
+	// On re-install the running xray-aio-amneziawg.service still
+	// holds the configured listen port — preflight runs in Phase 1,
+	// before Phase 3 restarts the unit. A busy bind here must NOT
+	// surface as StatusError or every re-install (port change,
+	// domain change, key rotation) aborts on a self-conflict. This
+	// is the exact regression Devin Review flagged on PR #27.
+	prev := udpPortHolderUnit
+	udpPortHolderUnit = func(int) string { return "xray-aio-amneziawg" }
+	t.Cleanup(func() { udpPortHolderUnit = prev })
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	c := checkAmneziaWGUDP(context.Background(), port)
+	if c.Status != StatusOK {
+		t.Fatalf("status=%s msg=%q; want ok (steady-state re-install)", c.Status, c.Message)
+	}
+	if !contains(c.Message, "xray-aio-amneziawg") {
+		t.Errorf("message=%q; want it to name the holding unit", c.Message)
+	}
+	if !contains(c.Message, "steady state") {
+		t.Errorf("message=%q; want `steady state` so the operator knows preflight did not just give up", c.Message)
 	}
 }
 
@@ -223,7 +341,7 @@ func TestLookupPortHolderUnitForeignServiceReturnsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := lookupPortHolderUnit(port); got != "" {
+	if got := lookupHolderUnit(port, "tcp"); got != "" {
 		t.Fatalf("expected empty for foreign service, got %q", got)
 	}
 }
