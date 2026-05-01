@@ -1,0 +1,228 @@
+# Build and release the AmneziaWG userspace binaries that
+# `internal/transport/amneziawg/manager.go::ensureBinaries` downloads
+# at install time. Upstream amnezia-vpn/amneziawg-go and
+# amnezia-vpn/amneziawg-tools tag releases but do NOT publish release
+# assets — this workflow does that for us into vmhlov/xray-aio's own
+# releases, with the exact tag/asset naming `manager.DaemonDownloadURL`
+# and `manager.ToolDownloadURL` construct.
+#
+# Trigger: push of an annotated tag matching
+#   - `amneziawg-go-v<X.Y.Z>`         → builds amneziawg-go from upstream tag v<X.Y.Z>
+#   - `amneziawg-tools-v<X.Y.Z>`      → builds amneziawg-tools from upstream tag v<X.Y.Z>
+#
+# Each job builds linux/amd64 + linux/arm64, computes a sha256
+# sidecar (consumed by manager.fetchAndVerify), and uploads the four
+# files to a GitHub release on the same tag in this repo.
+name: release-amneziawg
+
+on:
+  push:
+    tags:
+      - 'amneziawg-go-v*'
+      - 'amneziawg-tools-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-amneziawg-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-amneziawg-go:
+    if: startsWith(github.ref, 'refs/tags/amneziawg-go-v')
+    name: amneziawg-go ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve upstream version
+        id: ver
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # tag = amneziawg-go-vX.Y.Z → upstream = vX.Y.Z
+          upstream="${tag#amneziawg-go-}"
+          echo "tag=$tag"           >> "$GITHUB_OUTPUT"
+          echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout upstream amneziawg-go @ ${{ steps.ver.outputs.upstream }}
+        uses: actions/checkout@v4
+        with:
+          repository: amnezia-vpn/amneziawg-go
+          ref: ${{ steps.ver.outputs.upstream }}
+          path: amneziawg-go
+
+      # amneziawg-go's go.mod requires Go 1.24. The main xray-aio CI
+      # uses 1.22 because the xray-aio binary itself targets that
+      # baseline; the daemon binary is independent.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      # Upstream's Makefile generates version.go via `git describe`
+      # before each build. We bypass that path because cross-compile
+      # via `make` would still pick up host-toolchain assumptions —
+      # write version.go ourselves with the resolved upstream tag, then
+      # invoke `go build` directly.
+      - name: Generate version.go
+        working-directory: amneziawg-go
+        run: |
+          set -euo pipefail
+          printf 'package main\n\nconst Version = "%s"\n' \
+            "${{ steps.ver.outputs.upstream }}" > version.go
+
+      - name: Build linux/amd64 + linux/arm64
+        working-directory: amneziawg-go
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
+              go build \
+                -trimpath \
+                -ldflags='-s -w' \
+                -o "../dist/amneziawg-go-linux-$arch" \
+                .
+          done
+
+      - name: SHA256 sidecars
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for f in amneziawg-go-linux-*; do
+            # `sha256sum` writes "<hex>  <basename>". Match what
+            # `manager.parseSHA256Line` accepts.
+            sha256sum "$f" | tee "$f.sha256"
+          done
+
+      - name: Smoke test (amd64 binary boots and prints help)
+        run: |
+          set -euo pipefail
+          chmod +x dist/amneziawg-go-linux-amd64
+          # amneziawg-go runs as a daemon — invoking it without args
+          # would block. Print the version constant we just baked in
+          # via `strings(1)` so we at least confirm the binary is
+          # well-formed and the version landed.
+          file dist/amneziawg-go-linux-amd64
+          file dist/amneziawg-go-linux-arm64
+          if ! grep -q "${{ steps.ver.outputs.upstream }}" \
+            <(strings dist/amneziawg-go-linux-amd64); then
+            echo "::error::version string ${{ steps.ver.outputs.upstream }} not found in amd64 binary"
+            exit 1
+          fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          body: |
+            Built by `.github/workflows/release-amneziawg.yml`
+            from `amnezia-vpn/amneziawg-go@${{ steps.ver.outputs.upstream }}`.
+
+            Consumed by `internal/transport/amneziawg/manager.go::ensureBinaries`
+            via `manager.DaemonDownloadURL`. Each binary is paired with
+            a `.sha256` sidecar that the manager's `fetchAndVerify`
+            stream-checks during install.
+          files: |
+            dist/amneziawg-go-linux-amd64
+            dist/amneziawg-go-linux-amd64.sha256
+            dist/amneziawg-go-linux-arm64
+            dist/amneziawg-go-linux-arm64.sha256
+          fail_on_unmatched_files: true
+
+  build-amneziawg-tools:
+    if: startsWith(github.ref, 'refs/tags/amneziawg-tools-v')
+    name: amneziawg-tools ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve upstream version
+        id: ver
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          upstream="${tag#amneziawg-tools-}"
+          echo "tag=$tag"           >> "$GITHUB_OUTPUT"
+          echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout upstream amneziawg-tools @ ${{ steps.ver.outputs.upstream }}
+        uses: actions/checkout@v4
+        with:
+          repository: amnezia-vpn/amneziawg-tools
+          ref: ${{ steps.ver.outputs.upstream }}
+          path: amneziawg-tools
+
+      - name: Install cross-compile toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu
+
+      - name: Build linux/amd64
+        working-directory: amneziawg-tools/src
+        run: |
+          set -euo pipefail
+          # Disable everything we do not ship: bash completion, the
+          # awg-quick wrapper, and the systemd units (xray-aio writes
+          # its own unit). The Makefile's `wg` target produces the
+          # CLI tool that gets renamed to `awg` on install — we mimic
+          # that rename when we copy out.
+          make wg \
+            CC=cc \
+            WITH_BASHCOMPLETION=no \
+            WITH_WGQUICK=no \
+            WITH_SYSTEMDUNITS=no
+          mkdir -p ../../dist
+          mv wg ../../dist/awg-linux-amd64
+          make clean
+
+      - name: Build linux/arm64
+        working-directory: amneziawg-tools/src
+        run: |
+          set -euo pipefail
+          make wg \
+            CC=aarch64-linux-gnu-gcc \
+            WITH_BASHCOMPLETION=no \
+            WITH_WGQUICK=no \
+            WITH_SYSTEMDUNITS=no
+          mv wg ../../dist/awg-linux-arm64
+
+      - name: SHA256 sidecars
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for f in awg-linux-*; do
+            sha256sum "$f" | tee "$f.sha256"
+          done
+
+      - name: Smoke test (amd64 binary `awg --version`)
+        run: |
+          set -euo pipefail
+          chmod +x dist/awg-linux-amd64
+          file dist/awg-linux-amd64
+          file dist/awg-linux-arm64
+          # `awg` is the renamed `wg`; a bare `--version` writes to
+          # stderr and exits 0. Pin that the binary at least executes.
+          dist/awg-linux-amd64 --version
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          body: |
+            Built by `.github/workflows/release-amneziawg.yml`
+            from `amnezia-vpn/amneziawg-tools@${{ steps.ver.outputs.upstream }}`.
+
+            Consumed by `internal/transport/amneziawg/manager.go::ensureBinaries`
+            via `manager.ToolDownloadURL`. Each binary is paired with
+            a `.sha256` sidecar that the manager's `fetchAndVerify`
+            stream-checks during install.
+          files: |
+            dist/awg-linux-amd64
+            dist/awg-linux-amd64.sha256
+            dist/awg-linux-arm64
+            dist/awg-linux-arm64.sha256
+          fail_on_unmatched_files: true

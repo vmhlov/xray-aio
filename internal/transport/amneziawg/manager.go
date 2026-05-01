@@ -2,6 +2,8 @@ package amneziawg
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -200,8 +202,14 @@ func (m *Manager) writeUnit() error {
 // applies the awg0.conf to the running interface (the daemon
 // itself doesn't parse the file). Both are no-arch-suffix, no-tar
 // flat binaries hosted on the xray-aio GitHub releases (built from
-// upstream sources by the project's own CI — upstream
-// amneziawg-go/amneziawg-tools don't ship release assets).
+// upstream sources by [.github/workflows/release-amneziawg.yml] —
+// upstream amneziawg-go/amneziawg-tools don't ship release assets).
+//
+// Each download is sha256-verified against a sidecar at
+// `<url>.sha256` (also produced by the same release workflow). A
+// missing sidecar, malformed digest, or content mismatch is a hard
+// error — we'd rather refuse to install than silently land a
+// truncated/corrupt/replaced binary on the operator's box.
 func (m *Manager) ensureBinaries(ctx context.Context) error {
 	specs := []struct {
 		path string
@@ -219,21 +227,83 @@ func (m *Manager) ensureBinaries(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("%s url: %w", s.name, err)
 		}
-		rc, err := m.Downloader.Get(ctx, u)
-		if err != nil {
-			return fmt.Errorf("fetch %s: %w", u, err)
-		}
-		if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-			_ = rc.Close()
-			return err
-		}
-		if err := writeFromReader(s.path, rc, 0o755); err != nil {
-			_ = rc.Close()
+		if err := m.fetchAndVerify(ctx, s.path, u, 0o755); err != nil {
 			return fmt.Errorf("install %s: %w", s.name, err)
 		}
-		_ = rc.Close()
 	}
 	return nil
+}
+
+// fetchAndVerify downloads the binary at url into dst (mode), after
+// validating its content against the sha256 digest published at
+// `url + ".sha256"`. The body is streamed through a hasher so we do
+// not buffer the whole binary in memory — amneziawg-go is currently
+// ~10 MB but the streaming write keeps the contract memory-bounded
+// for any future binary size.
+//
+// Failure modes (all hard errors, none fall back to "install
+// unverified"):
+//   - sidecar fetch error / non-2xx → "fetch sha256"
+//   - sidecar body that does not start with 64 hex chars → "sha256 sidecar"
+//   - body fetch error → "fetch"
+//   - hash mismatch → "sha256 mismatch" (and the partial file is removed)
+func (m *Manager) fetchAndVerify(ctx context.Context, dst, rawURL string, mode os.FileMode) error {
+	sumURL := rawURL + ".sha256"
+	sumRC, err := m.Downloader.Get(ctx, sumURL)
+	if err != nil {
+		return fmt.Errorf("fetch sha256 %s: %w", sumURL, err)
+	}
+	sumBytes, err := io.ReadAll(sumRC)
+	_ = sumRC.Close()
+	if err != nil {
+		return fmt.Errorf("read sha256 %s: %w", sumURL, err)
+	}
+	expected, err := parseSHA256Line(sumBytes)
+	if err != nil {
+		return fmt.Errorf("sha256 sidecar %s: %w", sumURL, err)
+	}
+
+	rc, err := m.Downloader.Get(ctx, rawURL)
+	if err != nil {
+		return fmt.Errorf("fetch %s: %w", rawURL, err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	h := sha256.New()
+	if err := writeFromReader(dst, io.TeeReader(rc, h), mode); err != nil {
+		return err
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(actual, expected) {
+		_ = os.Remove(dst)
+		return fmt.Errorf("sha256 mismatch for %s: got %s, want %s", rawURL, actual, expected)
+	}
+	return nil
+}
+
+// parseSHA256Line accepts the two formats `sha256sum(1)` produces:
+//
+//	<hex>  <name>     (binary mode, two spaces)
+//	<hex> *<name>     (text-input flag, one space + asterisk)
+//
+// Only the leading 64-hex-character digest is consumed; the
+// filename column is ignored because our sidecars are 1:1 with the
+// binary URL anyway.
+func parseSHA256Line(b []byte) (string, error) {
+	s := strings.TrimSpace(string(b))
+	if i := strings.IndexAny(s, " \t"); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) != 64 {
+		return "", fmt.Errorf("expected 64-hex-char digest, got %q", s)
+	}
+	if _, err := hex.DecodeString(s); err != nil {
+		return "", fmt.Errorf("malformed hex digest %q: %w", s, err)
+	}
+	return strings.ToLower(s), nil
 }
 
 // DaemonDownloadURL returns the URL to fetch amneziawg-go for the
