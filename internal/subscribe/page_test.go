@@ -106,3 +106,84 @@ func TestRenderHTMLDefaultLabel(t *testing.T) {
 		t.Fatalf("default label missing:\n%s", out)
 	}
 }
+
+func TestRenderHTMLIncludesAmneziaWG(t *testing.T) {
+	conf := "[Interface]\nPrivateKey = peerpriv\nAddress = 10.66.66.2/32\nDNS = 1.1.1.1\nMTU = 1380\n"
+	out, err := RenderHTML(Bundle{
+		Label: "xray-aio test",
+		AmneziaWGs: []AmneziaWGEntry{{
+			Label:        "vmh-aio.site (AmneziaWG)",
+			Conf:         conf,
+			ConfURL:      "awg0.conf",
+			ConfFilename: "awg0.conf",
+			QRURL:        "awg0.png",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	for _, want := range []string{
+		"<h2>AmneziaWG</h2>",
+		"vmh-aio.site (AmneziaWG)",
+		"<pre><code>",
+		"PrivateKey = peerpriv",
+		`href="awg0.conf"`,
+		`download="awg0.conf"`,
+		`src="awg0.png"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderHTMLAmneziaWGEscapesConfText(t *testing.T) {
+	hostile := "[Interface]\nFakeKey = </code><script>alert(1)</script>\n"
+	out, err := RenderHTML(Bundle{
+		AmneziaWGs: []AmneziaWGEntry{{
+			Conf:         hostile,
+			ConfURL:      "awg0.conf",
+			ConfFilename: "awg0.conf",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	if strings.Contains(out, "<script>alert(1)</script>") {
+		t.Fatalf("hostile conf content not escaped:\n%s", out)
+	}
+}
+
+func TestRenderPlainTextOmitsAmneziaWG(t *testing.T) {
+	body, err := RenderPlainText(Bundle{
+		NaiveURIs: []string{"naive+https://u:p@example.com:443"},
+		AmneziaWGs: []AmneziaWGEntry{{
+			Conf:         "[Interface]\nPrivateKey = peerpriv\n",
+			ConfFilename: "awg0.conf",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RenderPlainText: %v", err)
+	}
+	if strings.Contains(body, "PrivateKey") || strings.Contains(body, "[Interface]") {
+		t.Errorf("AmneziaWG conf must not leak into plain text:\n%s", body)
+	}
+	want := "naive+https://u:p@example.com:443\n"
+	if body != want {
+		t.Errorf("got %q want %q", body, want)
+	}
+}
+
+// AmneziaWG-only bundles have no URIs to advertise (Naive is
+// always co-located with AmneziaWG in the home-vpn profile, but
+// at the subscribe layer we treat the cases independently).
+// Plain text should reject them — clients that fetch ?plain=1
+// don't know how to consume a multi-line .conf.
+func TestRenderPlainTextRejectsAmneziaWGOnly(t *testing.T) {
+	_, err := RenderPlainText(Bundle{
+		AmneziaWGs: []AmneziaWGEntry{{Conf: "x"}},
+	})
+	if err == nil {
+		t.Fatal("expected error: AmneziaWG-only bundle has no URIs for plain.txt")
+	}
+}
