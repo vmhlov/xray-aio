@@ -156,6 +156,16 @@ func TestManagerInstall(t *testing.T) {
 		"AmbientCapabilities=CAP_NET_ADMIN",
 		"After=network-online.target",
 		"setconf awg0",
+		// The setconf hook is wrapped in a wait loop on the
+		// amneziawg-go UAPI socket, because Type=simple makes
+		// systemd run ExecStartPost before the daemon has had
+		// time to bind /var/run/amneziawg/awg0.sock. Asserting
+		// both the wait body and the socket path prevents a
+		// future refactor from silently regressing the race
+		// fix back into a flaky "Protocol not supported"
+		// failure.
+		"test -S " + uapiSocketPath,
+		"timeout waiting for " + uapiSocketPath,
 		// `ip addr add <SERVER_ADDR>` is the wg-quick-equivalent
 		// hop that `awg setconf` cannot do for us, since it
 		// rejects wg-quick directives. validConfig() leaves
