@@ -23,6 +23,7 @@ import (
 
 	// Side-effect imports: each package's init() registers its
 	// transport in the global transport registry.
+	_ "github.com/vmhlov/xray-aio/internal/transport/amneziawg"
 	_ "github.com/vmhlov/xray-aio/internal/transport/hysteria2"
 	_ "github.com/vmhlov/xray-aio/internal/transport/naive"
 	_ "github.com/vmhlov/xray-aio/internal/transport/xray"
