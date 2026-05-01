@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -858,19 +857,27 @@ func TestInstallReinstallSyncsHysteria2MasqueradeWithSelfStealPort(t *testing.T)
 	}
 }
 
-// Defensive: a hand-edited state.json with Hysteria2 set but Naive
-// missing must NOT panic the orchestrator. The home-mobile profile
-// invariant guarantees Naive alongside Hysteria2 in normal flows,
-// but the resync logic must still tolerate nil ps.Naive when an
-// explicit --hysteria2-masquerade override is supplied (the only
-// path on which the operator can reach Install with this state).
-// Regression test for Devin Review finding on PR #21.
-func TestInstallReinstallNilNaiveDoesNotPanicWithExternalMasquerade(t *testing.T) {
+// setupReinstallWithNilNaive seeds a home-mobile install, then
+// hand-edits the persisted state so that ProfileState.Naive is nil
+// while ProfileState.Hysteria2 is preserved. Returns a Deps factory
+// (each call yields fresh fakeTransport state) and a base
+// InstallOptions for the re-install caller to extend.
+//
+// state.json is shaped as state.State with the orchestrator's
+// ProfileState nested under Transports["_orchestrator"], so we
+// round-trip through loadProfileState/saveProfileState/state.{Load,Save}
+// — the same code paths Install uses — instead of unmarshalling the
+// raw file directly into a ProfileState (which would yield a zero
+// value, overwrite the State wrapper, and silently make the
+// re-install take the generatePlan() fresh-install branch instead
+// of the resync branch the callers want to exercise).
+func setupReinstallWithNilNaive(t *testing.T) (mkDeps func() Deps, baseOpts InstallOptions) {
+	t.Helper()
 	statePath, siteRoot := setupTestState(t)
 	xray := &fakeTransport{name: "xray"}
 	naive := &fakeTransport{name: "naive"}
 	hy2 := &fakeTransport{name: "hysteria2"}
-	mkDeps := func() Deps {
+	mkDeps = func() Deps {
 		return Deps{
 			Rand:        &deterministicReader{},
 			PreflightFn: stubPreflight,
@@ -888,35 +895,108 @@ func TestInstallReinstallNilNaiveDoesNotPanicWithExternalMasquerade(t *testing.T
 			StatePath: statePath,
 		}
 	}
-	// Seed state.
-	if _, err := Install(context.Background(), InstallOptions{
-		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
-	}, mkDeps()); err != nil {
+	baseOpts = InstallOptions{
+		Profile:       "home-mobile",
+		Domain:        "example.com",
+		NaiveSiteRoot: siteRoot,
+	}
+	// Seed.
+	if _, err := Install(context.Background(), baseOpts, mkDeps()); err != nil {
 		t.Fatalf("seed install: %v", err)
 	}
-	// Hand-edit state: drop Naive but keep Hysteria2.
-	raw, err := os.ReadFile(statePath)
+	// Hand-edit: drop Naive while keeping Hysteria2.
+	s, err := state.Load()
 	if err != nil {
-		t.Fatalf("read state: %v", err)
+		t.Fatalf("load state: %v", err)
 	}
-	var st ProfileState
-	if err := json.Unmarshal(raw, &st); err != nil {
-		t.Fatalf("unmarshal state: %v", err)
-	}
-	st.Naive = nil
-	patched, err := json.Marshal(st)
+	ps, err := loadProfileState(s)
 	if err != nil {
-		t.Fatalf("marshal state: %v", err)
+		t.Fatalf("load profile state: %v", err)
 	}
-	if err := os.WriteFile(statePath, patched, 0o600); err != nil {
-		t.Fatalf("write state: %v", err)
+	if ps == nil || ps.Hysteria2 == nil {
+		t.Fatalf("seed install did not persist orchestrator+hy2 state: ps=%+v", ps)
 	}
-	// Re-install with explicit override: must not panic.
-	if _, err := Install(context.Background(), InstallOptions{
-		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
-		Hysteria2MasqueradeURL: "https://news.ycombinator.com",
-	}, mkDeps()); err != nil {
-		t.Fatalf("re-install with nil Naive must not error: %v", err)
+	ps.Naive = nil
+	if err := saveProfileState(s, ps); err != nil {
+		t.Fatalf("save profile state: %v", err)
+	}
+	if err := state.Save(s); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	// Sanity: confirm the round-trip persisted Naive=nil. Without
+	// this, a regression in the hand-edit setup would silently
+	// fall back to the fresh-install path and any caller's
+	// re-install assertion would pass vacuously.
+	s2, err := state.Load()
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	ps2, err := loadProfileState(s2)
+	if err != nil {
+		t.Fatalf("reload profile state: %v", err)
+	}
+	if ps2 == nil {
+		t.Fatal("profile state missing after Save")
+	}
+	if ps2.Naive != nil {
+		t.Fatalf("expected Naive=nil after hand-edit, got %+v", ps2.Naive)
+	}
+	if ps2.Hysteria2 == nil {
+		t.Fatal("expected Hysteria2 to be preserved across hand-edit")
+	}
+	return mkDeps, baseOpts
+}
+
+// Defensive: a hand-edited state.json with Hysteria2 set but Naive
+// missing must NOT panic the orchestrator when the operator
+// re-installs with an explicit --hysteria2-masquerade override.
+//
+// Regression for Devin Review finding on PR #21: the orchestrator
+// used to compute `defaultMasq := fmt.Sprintf(... ps.Naive.SelfStealPort)`
+// before the masquerade switch, which panicked when ps.Naive was
+// nil regardless of which switch branch eventually matched. PR #22
+// moved that computation inside guarded switch branches.
+//
+// The override path takes the first switch case
+// (`opts.Hysteria2MasqueradeURL != ""`) — the value in this test is
+// reaching the switch at all without the eager pre-switch panic.
+// We assert the orthogonal "naive state missing" error from Phase 3
+// because home-mobile's profile.Transports list still includes
+// "naive" and buildTransportOptions("naive", ps) legitimately
+// rejects ps.Naive == nil; that clean error return proves the
+// resync switch ran to completion without panicking.
+func TestInstallReinstallNilNaiveDoesNotPanicWithExternalMasquerade(t *testing.T) {
+	mkDeps, opts := setupReinstallWithNilNaive(t)
+	opts.Hysteria2MasqueradeURL = "https://news.ycombinator.com"
+	_, err := Install(context.Background(), opts, mkDeps())
+	if err == nil {
+		t.Fatal("re-install with hand-edited state (Naive nil) + override must surface naive-state-missing, got nil error")
+	}
+	if !strings.Contains(err.Error(), "naive state missing") {
+		t.Fatalf("re-install error shape changed — want \"naive state missing\", got: %v", err)
+	}
+}
+
+// Companion to the override-path test above: with NO
+// --hysteria2-masquerade override on re-install, the masquerade
+// switch falls through to `case ps.Naive == nil:` (install.go),
+// which is the explicit no-op branch added in PR #22 specifically
+// to tolerate hand-edited state without panicking on the
+// downstream `ps.Naive.SelfStealPort` accesses. This test exercises
+// that exact branch and would catch a regression that re-introduced
+// any default-style branch ahead of the nil guard.
+//
+// Same Phase-3 assertion as the override variant: a clean
+// "naive state missing" error proves the resync switch returned
+// cleanly with ps.Naive == nil.
+func TestInstallReinstallNilNaiveDoesNotPanicWithoutExternalMasquerade(t *testing.T) {
+	mkDeps, opts := setupReinstallWithNilNaive(t)
+	_, err := Install(context.Background(), opts, mkDeps())
+	if err == nil {
+		t.Fatal("re-install with hand-edited state (Naive nil) + no override must surface naive-state-missing, got nil error")
+	}
+	if !strings.Contains(err.Error(), "naive state missing") {
+		t.Fatalf("re-install error shape changed — want \"naive state missing\", got: %v", err)
 	}
 }
 
