@@ -223,10 +223,23 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 			if ps.Hysteria2.ListenPort == 0 {
 				ps.Hysteria2.ListenPort = hysteria2transport.DefaultListenPort
 			}
-			if opts.Hysteria2MasqueradeURL != "" {
+			// Masquerade URL precedence on re-install mirrors the
+			// Xray.Dest sync above:
+			//   - explicit --hysteria2-masquerade wins;
+			//   - otherwise, if state holds a default-style loopback
+			//     URL (https://127.0.0.1:*), follow the (possibly
+			//     just-changed) NaiveSelfStealPort so probes still
+			//     land on Caddy's selfsteal site;
+			//   - otherwise (operator pinned an external masquerade,
+			//     e.g. https://news.ycombinator.com), leave it alone;
+			//   - if state is empty (fresh install on existing
+			//     state.json without hy2), fall back to loopback.
+			switch {
+			case opts.Hysteria2MasqueradeURL != "":
 				ps.Hysteria2.MasqueradeURL = opts.Hysteria2MasqueradeURL
-			}
-			if ps.Hysteria2.MasqueradeURL == "" && ps.Naive != nil {
+			case ps.Naive != nil && strings.HasPrefix(ps.Hysteria2.MasqueradeURL, "https://127.0.0.1:"):
+				ps.Hysteria2.MasqueradeURL = fmt.Sprintf("https://127.0.0.1:%d", ps.Naive.SelfStealPort)
+			case ps.Hysteria2.MasqueradeURL == "" && ps.Naive != nil:
 				ps.Hysteria2.MasqueradeURL = fmt.Sprintf("https://127.0.0.1:%d", ps.Naive.SelfStealPort)
 			}
 		}
