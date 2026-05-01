@@ -24,6 +24,7 @@ type ProfileState struct {
 	Xray         *XrayState         `json:"xray,omitempty"`
 	Naive        *NaiveState        `json:"naive,omitempty"`
 	Hysteria2    *Hysteria2State    `json:"hysteria2,omitempty"`
+	AmneziaWG    *AmneziaWGState    `json:"amneziawg,omitempty"`
 	Subscription *SubscriptionState `json:"subscription,omitempty"`
 }
 
@@ -62,6 +63,69 @@ type Hysteria2State struct {
 	Password      string `json:"password"`
 	ListenPort    int    `json:"listen_port"`
 	MasqueradeURL string `json:"masquerade_url,omitempty"`
+}
+
+// AmneziaWGState is the orchestrator-owned snapshot of the AmneziaWG
+// install. Carries both halves of the keypair material (server +
+// the single peer) so the subscription bundle can render a
+// self-contained .conf for the client without needing an interactive
+// "scan this QR" flow during install.
+//
+// Multi-peer is deferred to Phase 3 UX (xray-aio peer add/remove);
+// in v1 a fresh `install` produces exactly one peer and the operator
+// hands the bundle to one client. A subsequent rotate-style command
+// will be able to add/revoke peers without invalidating the existing
+// one.
+//
+// Persisting full obfuscation params (Jc/Jmin/Jmax/S1/S2/H1..H4) is
+// what lets a re-run of `xray-aio install` keep the existing peer
+// .conf valid: the client and server have to agree on the exact
+// values, and re-randomizing them on every install would silently
+// break previously distributed configs.
+type AmneziaWGState struct {
+	// Server-side keypair. PrivateKey is base64-encoded; PublicKey
+	// is derived from it (kept in state.json so we don't have to
+	// re-derive it on every Status/Probe call).
+	ServerPrivateKey string `json:"server_private_key"`
+	ServerPublicKey  string `json:"server_public_key"`
+
+	// Peer-side keypair. The client receives PeerPrivateKey via
+	// the rendered .conf; PeerPublicKey lives in the server's
+	// [Peer] section and is what the AmneziaWG handshake matches
+	// against.
+	PeerPrivateKey string `json:"peer_private_key"`
+	PeerPublicKey  string `json:"peer_public_key"`
+
+	// PresharedKey strengthens forward secrecy; appears symmetrically
+	// in the server's [Peer] section and the peer's .conf.
+	PresharedKey string `json:"preshared_key"`
+
+	// ListenPort is the UDP port the server binds.
+	ListenPort int `json:"listen_port"`
+
+	// ServerAddress / PeerAddress are the TUN interface addresses
+	// (CIDR form) for each side. Persisted so re-installs don't
+	// renumber the tunnel and break in-flight client connections.
+	ServerAddress string `json:"server_address"`
+	PeerAddress   string `json:"peer_address"`
+
+	// MTU + DNS appear only in the peer's .conf; we keep them on
+	// the server snapshot so the bundle renderer doesn't need its
+	// own knob set.
+	MTU int    `json:"mtu"`
+	DNS string `json:"dns,omitempty"`
+
+	// Obfuscation parameters. All fields are populated on first
+	// install and persisted as-is.
+	Jc   int    `json:"jc"`
+	Jmin int    `json:"jmin"`
+	Jmax int    `json:"jmax"`
+	S1   int    `json:"s1"`
+	S2   int    `json:"s2"`
+	H1   uint32 `json:"h1"`
+	H2   uint32 `json:"h2"`
+	H3   uint32 `json:"h3"`
+	H4   uint32 `json:"h4"`
 }
 
 // SubscriptionState is the per-host subscription secret plus the token

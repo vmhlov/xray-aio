@@ -78,7 +78,7 @@ func newInstallCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&opts.Profile, "profile", "home-stealth", "preset profile (home-stealth, home-mobile)")
+	cmd.Flags().StringVar(&opts.Profile, "profile", "home-stealth", "preset profile (home-stealth, home-mobile, home-vpn)")
 	cmd.Flags().StringVar(&opts.Domain, "domain", "", "domain name clients use to reach this host (required)")
 	cmd.Flags().StringVar(&opts.Email, "email", "", "email for Let's Encrypt registration (recommended)")
 	cmd.Flags().IntVar(&opts.XrayPort, "xray-port", 0, "override Xray REALITY listen port (default 443)")
@@ -89,6 +89,11 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.NaiveSelfStealRoot, "naive-selfsteal-root", "", "override directory file_served on the selfsteal port (default /var/lib/xray-aio/selfsteal)")
 	cmd.Flags().IntVar(&opts.Hysteria2Port, "hysteria2-port", 0, "override Hysteria 2 UDP listen port for the home-mobile profile (default 443)")
 	cmd.Flags().StringVar(&opts.Hysteria2MasqueradeURL, "hysteria2-masquerade", "", "override Hysteria 2 masquerade upstream URL (default https://127.0.0.1:<naive-selfsteal-port>)")
+	cmd.Flags().IntVar(&opts.AmneziaWGListenPort, "amneziawg-listen-port", 0, "override AmneziaWG UDP listen port for the home-vpn profile (default 51842)")
+	cmd.Flags().StringVar(&opts.AmneziaWGServerAddress, "amneziawg-server-address", "", "override AmneziaWG server-side TUN CIDR (default 10.66.66.1/24)")
+	cmd.Flags().StringVar(&opts.AmneziaWGPeerAddress, "amneziawg-peer-address", "", "override AmneziaWG peer-side TUN CIDR (default 10.66.66.2/32)")
+	cmd.Flags().IntVar(&opts.AmneziaWGMTU, "amneziawg-mtu", 0, "override AmneziaWG peer-side MTU (default 1380)")
+	cmd.Flags().StringVar(&opts.AmneziaWGDNS, "amneziawg-dns", "", "override AmneziaWG peer-side DNS server (default 1.1.1.1)")
 	cmd.Flags().BoolVar(&opts.SkipPreflightOnError, "skip-preflight-errors", false, "proceed even if preflight reports errors (advanced)")
 	return cmd
 }

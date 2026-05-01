@@ -39,10 +39,38 @@ var ProfileHomeMobile = Profile{
 	Transports:  []string{"xray", "naive", "hysteria2"},
 }
 
+// ProfileHomeVPN bundles NaïveProxy with AmneziaWG, the
+// DPI-resistant WireGuard fork. Unlike the proxy-shaped profiles
+// (home-stealth, home-mobile) which terminate per-connection on the
+// server, this profile installs a layer-3 VPN: the client mounts a
+// TUN interface and routes traffic through it.
+//
+// NaïveProxy is included alongside AmneziaWG for two reasons:
+//   - it brings up Caddy with a Let's Encrypt cert so the
+//     subscription bundle (HTML page + downloadable awg0.conf + QR)
+//     is served over real HTTPS at https://<domain>:<naive-port>/sub/<token>/;
+//   - it gives the operator a TCP-fallback knob for networks where
+//     UDP is partly or wholly filtered. AmneziaWG uses UDP exclusively;
+//     when UDP is blocked the operator can route the client over
+//     Naive (proxy-shaped) until the network changes.
+//
+// Order matters: naive installs before amneziawg because the
+// subscription bundle is staged into <naive-site-root>/sub/<token>/
+// after both transports are up, and the AmneziaWG-side .conf
+// rendering does not depend on Naive being installed first — but
+// keeping the dependent-after-prerequisite invariant matches how
+// home-mobile orders xray → naive → hysteria2.
+var ProfileHomeVPN = Profile{
+	Name:        "home-vpn",
+	Description: "NaïveProxy (TCP fallback + bundle host) + AmneziaWG (DPI-resistant L3 VPN).",
+	Transports:  []string{"naive", "amneziawg"},
+}
+
 // profiles is the registry of known profiles. Lookup is via [ResolveProfile].
 var profiles = map[string]Profile{
 	ProfileHomeStealth.Name: ProfileHomeStealth,
 	ProfileHomeMobile.Name:  ProfileHomeMobile,
+	ProfileHomeVPN.Name:     ProfileHomeVPN,
 }
 
 // ResolveProfile returns the Profile by name or an error listing valid
