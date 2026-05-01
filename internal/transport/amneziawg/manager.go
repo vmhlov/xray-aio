@@ -195,6 +195,7 @@ func (m *Manager) writeUnit(cfg Config) error {
 	unit = strings.ReplaceAll(unit, "{{TOOL}}", m.Paths.BinaryTool)
 	unit = strings.ReplaceAll(unit, "{{CONFIG}}", m.Paths.Config)
 	unit = strings.ReplaceAll(unit, "{{SERVER_ADDR}}", resolved.ServerAddress)
+	unit = strings.ReplaceAll(unit, "{{UAPI_SOCKET}}", uapiSocketPath)
 	if err := os.MkdirAll(filepath.Dir(m.Paths.UnitFile), 0o755); err != nil {
 		return err
 	}
@@ -411,6 +412,19 @@ func writeFromReader(dst string, r io.Reader, mode os.FileMode) error {
 	return os.Rename(tmpName, dst)
 }
 
+// uapiSocketPath is where amneziawg-go binds its userspace UAPI
+// socket. The path is hard-coded in the upstream daemon (the
+// amnezia-vpn fork moved it from wireguard-go's
+// `/var/run/wireguard/<iface>.sock` to `/var/run/amneziawg/<iface>.sock`
+// to coexist with a kernel-mode WireGuard install on the same host),
+// and the `awg` CLI looks for it at the same path before falling
+// through to netlink. Anything that runs `awg setconf|set|show` on a
+// userspace-only host — i.e. a system without the AmneziaWG kernel
+// module loaded — must wait until this socket exists, otherwise the
+// CLI falls through to netlink and prints `Unable to modify interface:
+// Protocol not supported`.
+const uapiSocketPath = "/var/run/amneziawg/awg0.sock"
+
 // systemdUnitTemplate runs amneziawg-go in foreground mode (so
 // systemd can supervise it cleanly) and applies the awg0
 // configuration via three ordered ExecStartPost hooks:
@@ -424,6 +438,22 @@ func writeFromReader(dst string, r io.Reader, mode os.FileMode) error {
 //     do it ourselves because we render a wg setconf file (no
 //     Address line) and we don't ship the awg-quick wrapper.
 //  3. `ip link set up dev awg0` enables the link.
+//
+// The setconf hook is wrapped in a small shell wait loop because
+// amneziawg-go's UAPI socket appears asynchronously after the
+// daemon has finished bringing up the TUN — typically within ~1s,
+// but `Type=simple` makes systemd run ExecStartPost the moment
+// ExecStart execs, well before the socket is ready. Without the
+// wait, `awg setconf` finds no UAPI socket, falls through to
+// netlink, and exits 1 with `Unable to modify interface: Protocol
+// not supported` (because the AmneziaWG kernel module is not
+// installed). The loop polls 50 * 0.1s = 5s before giving up,
+// which is well above the empirically observed startup time and
+// well below systemd's default `TimeoutStartSec=90s`.
+//
+// `$$` escapes one `$` past systemd's specifier expansion so the
+// resulting `/bin/sh -c` argument contains literal `$i` /
+// `$((i+1))` shell syntax.
 //
 // ExecStop tears the interface down so `systemctl restart` cleanly
 // recreates it on the new config (no stale address conflicts on
@@ -443,7 +473,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={{DAEMON}} --foreground awg0
-ExecStartPost={{TOOL}} setconf awg0 {{CONFIG}}
+ExecStartPost=/bin/sh -c 'i=0; while ! test -S {{UAPI_SOCKET}}; do sleep 0.1; i=$$((i+1)); if [ $$i -ge 50 ]; then echo "timeout waiting for {{UAPI_SOCKET}}" >&2; exit 1; fi; done; exec {{TOOL}} setconf awg0 {{CONFIG}}'
 ExecStartPost=/sbin/ip addr add {{SERVER_ADDR}} dev awg0
 ExecStartPost=/sbin/ip link set up dev awg0
 ExecStop=/sbin/ip link del awg0
