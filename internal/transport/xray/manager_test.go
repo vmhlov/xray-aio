@@ -140,7 +140,8 @@ func TestManagerInstall(t *testing.T) {
 		{"getent", "passwd", "xray"},
 		{"chown", "root:xray", paths.Config},
 		{"systemctl", "daemon-reload"},
-		{"systemctl", "enable", "--now", "xray-aio-xray.service"},
+		{"systemctl", "enable", "xray-aio-xray.service"},
+		{"systemctl", "restart", "xray-aio-xray.service"},
 	}
 	if !equalCalls(runner.calls, wantCalls) {
 		t.Fatalf("calls=%v want %v", runner.calls, wantCalls)

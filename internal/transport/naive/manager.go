@@ -88,8 +88,9 @@ func NewManager() *Manager {
 }
 
 // Install lays down the binary, the Caddyfile, the selfsteal index
-// and the systemd unit, then enables and starts the service.
-// Idempotent — safe to call repeatedly.
+// and the systemd unit, then starts (or restarts) the service.
+// Idempotent — re-running with a freshly rendered Caddyfile picks
+// up the change without operator intervention.
 func (m *Manager) Install(ctx context.Context, opts Options) error {
 	if err := m.ensureBinary(ctx); err != nil {
 		return fmt.Errorf("install caddy-naive binary: %w", err)
@@ -126,8 +127,16 @@ func (m *Manager) Install(ctx context.Context, opts Options) error {
 	if _, err := m.Runner.Run(ctx, "systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("daemon-reload: %w", err)
 	}
-	if _, err := m.Runner.Run(ctx, "systemctl", "enable", "--now", m.Paths.UnitName); err != nil {
-		return fmt.Errorf("enable+start: %w", err)
+	if _, err := m.Runner.Run(ctx, "systemctl", "enable", m.Paths.UnitName); err != nil {
+		return fmt.Errorf("enable: %w", err)
+	}
+	// `systemctl restart` starts a stopped unit and restarts a
+	// running one — either way the new Caddyfile is picked up.
+	// Using `enable --now` instead would leave a running unit on
+	// the old config, which is the bug this Install method existed
+	// to avoid.
+	if _, err := m.Runner.Run(ctx, "systemctl", "restart", m.Paths.UnitName); err != nil {
+		return fmt.Errorf("restart: %w", err)
 	}
 	return nil
 }

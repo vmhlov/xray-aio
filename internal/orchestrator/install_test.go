@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -854,6 +855,68 @@ func TestInstallReinstallSyncsHysteria2MasqueradeWithSelfStealPort(t *testing.T)
 	hy2Extra := hy2.installCalls[len(hy2.installCalls)-1].Extra
 	if got, _ := hy2Extra["hysteria2.masquerade_url"].(string); got != "https://example.com:9443" {
 		t.Errorf("hysteria2.masquerade_url in Extra = %q, want https://example.com:9443", got)
+	}
+}
+
+// Defensive: a hand-edited state.json with Hysteria2 set but Naive
+// missing must NOT panic the orchestrator. The home-mobile profile
+// invariant guarantees Naive alongside Hysteria2 in normal flows,
+// but the resync logic must still tolerate nil ps.Naive when an
+// explicit --hysteria2-masquerade override is supplied (the only
+// path on which the operator can reach Install with this state).
+// Regression test for Devin Review finding on PR #21.
+func TestInstallReinstallNilNaiveDoesNotPanicWithExternalMasquerade(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	hy2 := &fakeTransport{name: "hysteria2"}
+	mkDeps := func() Deps {
+		return Deps{
+			Rand:        &deterministicReader{},
+			PreflightFn: stubPreflight,
+			NewTransport: func(name string) (transport.Transport, error) {
+				switch name {
+				case "xray":
+					return xray, nil
+				case "naive":
+					return naive, nil
+				case "hysteria2":
+					return hy2, nil
+				}
+				return nil, errors.New("unknown")
+			},
+			StatePath: statePath,
+		}
+	}
+	// Seed state.
+	if _, err := Install(context.Background(), InstallOptions{
+		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
+	}, mkDeps()); err != nil {
+		t.Fatalf("seed install: %v", err)
+	}
+	// Hand-edit state: drop Naive but keep Hysteria2.
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var st ProfileState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	st.Naive = nil
+	patched, err := json.Marshal(st)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(statePath, patched, 0o600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	// Re-install with explicit override: must not panic.
+	if _, err := Install(context.Background(), InstallOptions{
+		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
+		Hysteria2MasqueradeURL: "https://news.ycombinator.com",
+	}, mkDeps()); err != nil {
+		t.Fatalf("re-install with nil Naive must not error: %v", err)
 	}
 }
 
