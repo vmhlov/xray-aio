@@ -72,8 +72,10 @@ type InstallOptions struct {
 	// Hysteria2MasqueradeURL overrides the URL hysteria 2 proxies to
 	// when a probe arrives without valid auth. Only consulted when
 	// the profile contains hysteria2. Default:
-	// https://127.0.0.1:<NaiveSelfStealPort> — the same loopback
-	// selfsteal site Caddy already serves with the LE cert.
+	// https://<Domain>:<NaiveSelfStealPort> — Caddy's selfsteal site
+	// reached via the public hostname so SNI matches Caddy's strict
+	// site definition. Linux routes the dial back via loopback
+	// automatically.
 	Hysteria2MasqueradeURL string
 
 	// SkipPreflightOnError, when true, downgrades preflight errors
@@ -226,21 +228,29 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 			// Masquerade URL precedence on re-install mirrors the
 			// Xray.Dest sync above:
 			//   - explicit --hysteria2-masquerade wins;
-			//   - otherwise, if state holds a default-style loopback
-			//     URL (https://127.0.0.1:*), follow the (possibly
-			//     just-changed) NaiveSelfStealPort so probes still
-			//     land on Caddy's selfsteal site;
+			//   - otherwise, if state holds a default-style URL —
+			//     either the new domain-based form
+			//     (https://<Domain>:*) or the legacy loopback form
+			//     (https://127.0.0.1:*, written by xray-aio < #21) —
+			//     refresh it to https://<Domain>:<NaiveSelfStealPort>
+			//     so probes still land on Caddy's selfsteal site
+			//     (and SNI matches Caddy's strict site definition);
 			//   - otherwise (operator pinned an external masquerade,
 			//     e.g. https://news.ycombinator.com), leave it alone;
 			//   - if state is empty (fresh install on existing
-			//     state.json without hy2), fall back to loopback.
+			//     state.json without hy2), fall back to default.
+			defaultMasq := fmt.Sprintf("https://%s:%d", opts.Domain, ps.Naive.SelfStealPort)
+			legacyLoopbackPrefix := "https://127.0.0.1:"
+			currentDomainPrefix := fmt.Sprintf("https://%s:", opts.Domain)
 			switch {
 			case opts.Hysteria2MasqueradeURL != "":
 				ps.Hysteria2.MasqueradeURL = opts.Hysteria2MasqueradeURL
-			case ps.Naive != nil && strings.HasPrefix(ps.Hysteria2.MasqueradeURL, "https://127.0.0.1:"):
-				ps.Hysteria2.MasqueradeURL = fmt.Sprintf("https://127.0.0.1:%d", ps.Naive.SelfStealPort)
+			case ps.Naive != nil && strings.HasPrefix(ps.Hysteria2.MasqueradeURL, legacyLoopbackPrefix):
+				ps.Hysteria2.MasqueradeURL = defaultMasq
+			case ps.Naive != nil && strings.HasPrefix(ps.Hysteria2.MasqueradeURL, currentDomainPrefix):
+				ps.Hysteria2.MasqueradeURL = defaultMasq
 			case ps.Hysteria2.MasqueradeURL == "" && ps.Naive != nil:
-				ps.Hysteria2.MasqueradeURL = fmt.Sprintf("https://127.0.0.1:%d", ps.Naive.SelfStealPort)
+				ps.Hysteria2.MasqueradeURL = defaultMasq
 			}
 		}
 	}
@@ -363,18 +373,6 @@ func buildTransportOptions(name string, ps *ProfileState) (transport.Options, er
 		}
 		if ps.Hysteria2.MasqueradeURL != "" {
 			extra["hysteria2.masquerade_url"] = ps.Hysteria2.MasqueradeURL
-		}
-		// Skip TLS verification on the masquerade upstream when it's
-		// the default-style loopback selfsteal site. Caddy's site
-		// listener is bound to <Domain>:<SelfStealPort>, but hy2
-		// dials the upstream with SNI=127.0.0.1, so a verifying
-		// dialer fails the handshake and active probes get a bare
-		// 502 instead of the real selfsteal HTML — defeating the
-		// whole purpose of the masquerade. The skip applies to the
-		// loopback hop only; the public client→server hy2 leg
-		// remains cert-checked against Domain.
-		if strings.HasPrefix(ps.Hysteria2.MasqueradeURL, "https://127.0.0.1:") {
-			extra["hysteria2.masquerade_insecure"] = true
 		}
 		return transport.Options{
 			Domain: ps.Domain,

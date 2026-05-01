@@ -174,8 +174,8 @@ func TestGeneratePlanHomeMobileIncludesHysteria2(t *testing.T) {
 	if ps.Hysteria2.ListenPort != 443 {
 		t.Errorf("Hysteria2.ListenPort default mismatch: %d", ps.Hysteria2.ListenPort)
 	}
-	if ps.Hysteria2.MasqueradeURL != "https://127.0.0.1:8443" {
-		t.Errorf("Hysteria2.MasqueradeURL default mismatch: %q", ps.Hysteria2.MasqueradeURL)
+	if ps.Hysteria2.MasqueradeURL != "https://example.com:8443" {
+		t.Errorf("Hysteria2.MasqueradeURL default mismatch: %q (must use Domain so SNI matches Caddy's site definition)", ps.Hysteria2.MasqueradeURL)
 	}
 }
 

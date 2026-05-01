@@ -121,9 +121,18 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 		if hyPort == 0 {
 			hyPort = hysteria2transport.DefaultListenPort
 		}
+		// Default-style masquerade dials Caddy's selfsteal site on
+		// the public Domain (not 127.0.0.1) so SNI matches Caddy's
+		// site definition (`<Domain>:<SelfStealPort>`). Linux routes
+		// `<own-public-IP>:<port>` back via loopback automatically,
+		// so traffic stays on-host. Using 127.0.0.1 here would make
+		// hy2 SNI the upstream as `127.0.0.1`, Caddy reject the TLS
+		// handshake (`tls: internal error`), and active probes get a
+		// bare 502 instead of the convincing selfsteal HTML — which
+		// defeats the whole point of the masquerade.
 		hyMasq := opts.Hysteria2MasqueradeURL
 		if hyMasq == "" {
-			hyMasq = fmt.Sprintf("https://127.0.0.1:%d", naiveSelfStealPort)
+			hyMasq = fmt.Sprintf("https://%s:%d", opts.Domain, naiveSelfStealPort)
 		}
 		ps.Hysteria2 = &Hysteria2State{
 			Password:      hyPass,
