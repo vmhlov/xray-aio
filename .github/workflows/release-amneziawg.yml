@@ -157,8 +157,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
+          # gcc-aarch64-linux-gnu ships only the cross compiler.
+          # libc6-dev-arm64-cross is the matching cross sysroot
+          # (arm64 libc headers + crt*.o under /usr/aarch64-linux-gnu/);
+          # without it, aarch64-linux-gnu-gcc falls back to host
+          # /usr/include and fails on bits/libc-header-start.h.
           sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
 
       - name: Build linux/amd64
         working-directory: amneziawg-tools/src
