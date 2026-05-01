@@ -66,11 +66,37 @@ var ProfileHomeVPN = Profile{
 	Transports:  []string{"naive", "amneziawg"},
 }
 
+// ProfileHomeVPNMobile is the union of home-mobile and home-vpn:
+// VLESS REALITY (Vision) on :443 + NaïveProxy (TCP/8444) +
+// Hysteria 2 (UDP/443) + AmneziaWG (UDP/51842). Use it when a
+// single VPS should serve both proxy-shaped clients (mobile fleet
+// behind a hostile-network — REALITY/Naive/Hysteria 2) and a
+// layer-3 VPN client (desktop/router with TUN, AmneziaWG) at the
+// same time, off the same domain and the same /sub/ bundle.
+//
+// There are no port conflicts: xray takes 443/tcp, Naive takes
+// 8444/tcp (with selfsteal on 8443/tcp loopback), Hysteria 2 takes
+// 443/udp, and AmneziaWG takes 51842/udp — each transport's
+// preflight already covers its own port.
+//
+// Order matters: xray → naive → hysteria2 → amneziawg keeps the
+// "TLS/cert provider before its dependents" invariant from
+// home-mobile (Hysteria 2 reuses Caddy's LE cert) and lands the
+// AmneziaWG service last so its UAPI-socket race fix
+// (manager.go:uapiSocketPath wait loop) runs after the rest of
+// the stack has settled.
+var ProfileHomeVPNMobile = Profile{
+	Name:        "home-vpn-mobile",
+	Description: "VLESS REALITY (Vision) + NaïveProxy + Hysteria 2 + AmneziaWG (full stack).",
+	Transports:  []string{"xray", "naive", "hysteria2", "amneziawg"},
+}
+
 // profiles is the registry of known profiles. Lookup is via [ResolveProfile].
 var profiles = map[string]Profile{
-	ProfileHomeStealth.Name: ProfileHomeStealth,
-	ProfileHomeMobile.Name:  ProfileHomeMobile,
-	ProfileHomeVPN.Name:     ProfileHomeVPN,
+	ProfileHomeStealth.Name:   ProfileHomeStealth,
+	ProfileHomeMobile.Name:    ProfileHomeMobile,
+	ProfileHomeVPN.Name:       ProfileHomeVPN,
+	ProfileHomeVPNMobile.Name: ProfileHomeVPNMobile,
 }
 
 // ResolveProfile returns the Profile by name or an error listing valid

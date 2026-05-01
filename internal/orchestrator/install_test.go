@@ -1121,6 +1121,7 @@ func TestApplyDefaultsHomeVPNPicksUpAmneziaWGPreflight(t *testing.T) {
 		{"home-stealth", false},
 		{"home-mobile", false},
 		{"home-vpn", true},
+		{"home-vpn-mobile", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.profile, func(t *testing.T) {

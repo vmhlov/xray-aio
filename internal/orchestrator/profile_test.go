@@ -42,11 +42,47 @@ func TestProfileNeedsHysteria2(t *testing.T) {
 	if !profileNeedsHysteria2("home-mobile") {
 		t.Error("home-mobile should need hysteria2")
 	}
+	if !profileNeedsHysteria2("home-vpn-mobile") {
+		t.Error("home-vpn-mobile should need hysteria2 (full-stack profile)")
+	}
 	if profileNeedsHysteria2("home-stealth") {
 		t.Error("home-stealth should NOT need hysteria2")
 	}
+	if profileNeedsHysteria2("home-vpn") {
+		t.Error("home-vpn should NOT need hysteria2")
+	}
 	if profileNeedsHysteria2("nope") {
 		t.Error("unknown profile should NOT need hysteria2")
+	}
+}
+
+// home-vpn-mobile is the union of home-mobile and home-vpn,
+// staged at the end of Phase 2.2 once amneziawg's runtime issues
+// (PR #33 wg-quick directives + PR #34 UAPI socket race) had been
+// shaken out by live test on Debian 11. The expected transport
+// list — xray then naive then hysteria2 then amneziawg — matches
+// the order the install loop must drive: xray + naive bring up
+// the TLS cert that hysteria2 piggybacks on, and amneziawg lands
+// last so its UAPI-socket wait loop runs after the rest of the
+// stack has settled.
+func TestResolveProfileHomeVPNMobile(t *testing.T) {
+	t.Parallel()
+
+	p, err := ResolveProfile("home-vpn-mobile")
+	if err != nil {
+		t.Fatalf("ResolveProfile(home-vpn-mobile): %v", err)
+	}
+	if p.Name != "home-vpn-mobile" {
+		t.Errorf("Name: %q", p.Name)
+	}
+	want := []string{"xray", "naive", "hysteria2", "amneziawg"}
+	if len(p.Transports) != len(want) {
+		t.Fatalf("Transports len: got %v, want %v", p.Transports, want)
+	}
+	for i, tr := range want {
+		if p.Transports[i] != tr {
+			t.Errorf("Transports[%d]: %q, want %q", i, p.Transports[i], tr)
+		}
 	}
 }
 

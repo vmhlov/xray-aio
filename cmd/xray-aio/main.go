@@ -78,7 +78,7 @@ func newInstallCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&opts.Profile, "profile", "home-stealth", "preset profile (home-stealth, home-mobile, home-vpn)")
+	cmd.Flags().StringVar(&opts.Profile, "profile", "home-stealth", "preset profile (home-stealth, home-mobile, home-vpn, home-vpn-mobile)")
 	cmd.Flags().StringVar(&opts.Domain, "domain", "", "domain name clients use to reach this host (required)")
 	cmd.Flags().StringVar(&opts.Email, "email", "", "email for Let's Encrypt registration (recommended)")
 	cmd.Flags().IntVar(&opts.XrayPort, "xray-port", 0, "override Xray REALITY listen port (default 443)")
