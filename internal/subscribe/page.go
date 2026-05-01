@@ -11,10 +11,11 @@ import (
 // page presents in one place. Any combination of fields may be
 // empty — only the populated transports are rendered.
 type Bundle struct {
-	Label       string // shown in <title> and the H1, e.g. "xray-aio"
-	VLESSURIs   []string
-	NaiveURIs   []string
-	GeneratedAt string // RFC 3339 timestamp, optional
+	Label         string // shown in <title> and the H1, e.g. "xray-aio"
+	VLESSURIs     []string
+	NaiveURIs     []string
+	Hysteria2URIs []string
+	GeneratedAt   string // RFC 3339 timestamp, optional
 }
 
 // RenderPlainText returns the subscription body in the format
@@ -22,7 +23,7 @@ type Bundle struct {
 // per line. Mainstream clients (NekoBox, Hiddify, Happ) accept this
 // shape directly.
 func RenderPlainText(b Bundle) (string, error) {
-	if len(b.VLESSURIs)+len(b.NaiveURIs) == 0 {
+	if len(b.VLESSURIs)+len(b.NaiveURIs)+len(b.Hysteria2URIs) == 0 {
 		return "", errors.New("Bundle has no URIs")
 	}
 	var sb bytes.Buffer
@@ -31,6 +32,10 @@ func RenderPlainText(b Bundle) (string, error) {
 		sb.WriteByte('\n')
 	}
 	for _, u := range b.NaiveURIs {
+		sb.WriteString(u)
+		sb.WriteByte('\n')
+	}
+	for _, u := range b.Hysteria2URIs {
 		sb.WriteString(u)
 		sb.WriteByte('\n')
 	}
@@ -119,6 +124,19 @@ const htmlTemplate = `<!doctype html>
 <h2>NaïveProxy</h2>
 <ol>
 {{range $i, $u := .NaiveURIs}}
+  <li>
+    <code>{{$u}}</code>
+    <div class="row">
+      <a class="btn" href="{{safeURL $u}}">Open in default client</a>
+    </div>
+  </li>
+{{end}}
+</ol>
+{{- end}}
+{{- if .Hysteria2URIs}}
+<h2>Hysteria 2</h2>
+<ol>
+{{range $i, $u := .Hysteria2URIs}}
   <li>
     <code>{{$u}}</code>
     <div class="row">

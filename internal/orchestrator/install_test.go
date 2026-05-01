@@ -601,6 +601,157 @@ func TestInstallReinstallPreservesExternalXrayDest(t *testing.T) {
 	}
 }
 
+// home-mobile installs three transports (xray, naive, hysteria2) and
+// the bundle published under <site>/sub/<token>/ MUST contain a
+// hysteria2:// URI alongside the existing vless:// and naive+https://.
+func TestInstallHomeMobileWiresHysteria2(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	hy2 := &fakeTransport{name: "hysteria2"}
+	deps := Deps{
+		Rand:        &deterministicReader{},
+		PreflightFn: stubPreflight,
+		NewTransport: func(name string) (transport.Transport, error) {
+			switch name {
+			case "xray":
+				return xray, nil
+			case "naive":
+				return naive, nil
+			case "hysteria2":
+				return hy2, nil
+			}
+			return nil, errors.New("unknown")
+		},
+		StatePath: statePath,
+	}
+	res, err := Install(context.Background(), InstallOptions{
+		Profile:       "home-mobile",
+		Domain:        "example.com",
+		NaiveSiteRoot: siteRoot,
+	}, deps)
+	if err != nil {
+		t.Fatalf("Install home-mobile: %v", err)
+	}
+	if res.State.Hysteria2 == nil {
+		t.Fatal("State.Hysteria2 must be populated for home-mobile")
+	}
+	if res.State.Hysteria2.Password == "" {
+		t.Error("Hysteria2.Password empty")
+	}
+	if res.State.Hysteria2.ListenPort != 443 {
+		t.Errorf("Hysteria2.ListenPort default mismatch: %d", res.State.Hysteria2.ListenPort)
+	}
+	if len(hy2.installCalls) != 1 {
+		t.Fatalf("hysteria2 Install called %d times", len(hy2.installCalls))
+	}
+	hy2Extra := hy2.installCalls[0].Extra
+	if hy2Extra["hysteria2.password"].(string) != res.State.Hysteria2.Password {
+		t.Errorf("hysteria2.password in Extra mismatch")
+	}
+	if hy2Extra["hysteria2.listen_port"].(int) != 443 {
+		t.Errorf("hysteria2.listen_port in Extra: %v", hy2Extra["hysteria2.listen_port"])
+	}
+	plain, err := os.ReadFile(filepath.Join(res.BundleDir, "plain.txt"))
+	if err != nil {
+		t.Fatalf("read plain: %v", err)
+	}
+	body := string(plain)
+	if !strings.Contains(body, "vless://") {
+		t.Errorf("plain.txt missing vless://: %s", body)
+	}
+	if !strings.Contains(body, "naive+https://") {
+		t.Errorf("plain.txt missing naive+https://: %s", body)
+	}
+	if !strings.Contains(body, "hysteria2://") {
+		t.Errorf("plain.txt missing hysteria2://: %s", body)
+	}
+}
+
+// home-stealth must NOT install hysteria2 even if the transport is
+// registered; the profile registry alone gates which transports fire.
+func TestInstallHomeStealthSkipsHysteria2(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	hy2 := &fakeTransport{name: "hysteria2"}
+	deps := Deps{
+		Rand:        &deterministicReader{},
+		PreflightFn: stubPreflight,
+		NewTransport: func(name string) (transport.Transport, error) {
+			switch name {
+			case "xray":
+				return xray, nil
+			case "naive":
+				return naive, nil
+			case "hysteria2":
+				return hy2, nil
+			}
+			return nil, errors.New("unknown")
+		},
+		StatePath: statePath,
+	}
+	res, err := Install(context.Background(), InstallOptions{
+		Profile: "home-stealth", Domain: "example.com", NaiveSiteRoot: siteRoot,
+	}, deps)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if res.State.Hysteria2 != nil {
+		t.Errorf("Hysteria2 must be nil for home-stealth, got %+v", res.State.Hysteria2)
+	}
+	if len(hy2.installCalls) != 0 {
+		t.Errorf("hysteria2 Install must not be called for home-stealth, called %d times", len(hy2.installCalls))
+	}
+}
+
+// On re-install with a new --hysteria2-port, the password is preserved
+// (so existing clients keep working) but the port follows the new value.
+func TestInstallReinstallHomeMobilePreservesPasswordRotatesPort(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	hy2 := &fakeTransport{name: "hysteria2"}
+	mkDeps := func() Deps {
+		return Deps{
+			Rand:        &deterministicReader{},
+			PreflightFn: stubPreflight,
+			NewTransport: func(name string) (transport.Transport, error) {
+				switch name {
+				case "xray":
+					return xray, nil
+				case "naive":
+					return naive, nil
+				case "hysteria2":
+					return hy2, nil
+				}
+				return nil, errors.New("unknown")
+			},
+			StatePath: statePath,
+		}
+	}
+	first, err := Install(context.Background(), InstallOptions{
+		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
+	}, mkDeps())
+	if err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	second, err := Install(context.Background(), InstallOptions{
+		Profile: "home-mobile", Domain: "example.com", NaiveSiteRoot: siteRoot,
+		Hysteria2Port: 12443,
+	}, mkDeps())
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if first.State.Hysteria2.Password != second.State.Hysteria2.Password {
+		t.Errorf("Hysteria2.Password rotated on re-install: %q vs %q",
+			first.State.Hysteria2.Password, second.State.Hysteria2.Password)
+	}
+	if second.State.Hysteria2.ListenPort != 12443 {
+		t.Errorf("Hysteria2.ListenPort = %d, want 12443", second.State.Hysteria2.ListenPort)
+	}
+}
+
 func TestStatusErrorsWhenNoInstall(t *testing.T) {
 	statePath, _ := setupTestState(t)
 	deps := Deps{StatePath: statePath, NewTransport: func(string) (transport.Transport, error) { return nil, errors.New("unused") }}

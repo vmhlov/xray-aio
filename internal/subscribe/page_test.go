@@ -64,6 +64,39 @@ func TestRenderHTMLEscapesURIs(t *testing.T) {
 	}
 }
 
+func TestRenderPlainTextIncludesHysteria2(t *testing.T) {
+	body, err := RenderPlainText(Bundle{
+		VLESSURIs:     []string{"vless://aaa"},
+		NaiveURIs:     []string{"naive+https://bbb"},
+		Hysteria2URIs: []string{"hysteria2://pw@example.com:443/?sni=example.com&insecure=0"},
+	})
+	if err != nil {
+		t.Fatalf("RenderPlainText: %v", err)
+	}
+	want := "vless://aaa\nnaive+https://bbb\nhysteria2://pw@example.com:443/?sni=example.com&insecure=0\n"
+	if body != want {
+		t.Fatalf("got %q want %q", body, want)
+	}
+}
+
+func TestRenderHTMLIncludesHysteria2(t *testing.T) {
+	out, err := RenderHTML(Bundle{
+		Label:         "xray-aio test",
+		Hysteria2URIs: []string{"hysteria2://pw@example.com:443/?sni=example.com&insecure=0#tag"},
+	})
+	if err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	for _, want := range []string{
+		"<h2>Hysteria 2</h2>",
+		"hysteria2://pw@example.com:443/",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderHTMLDefaultLabel(t *testing.T) {
 	out, err := RenderHTML(Bundle{VLESSURIs: []string{"vless://x"}})
 	if err != nil {

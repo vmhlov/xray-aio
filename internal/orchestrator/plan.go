@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/vmhlov/xray-aio/internal/subscribe"
+	hysteria2transport "github.com/vmhlov/xray-aio/internal/transport/hysteria2"
 	naivetransport "github.com/vmhlov/xray-aio/internal/transport/naive"
 	xraytransport "github.com/vmhlov/xray-aio/internal/transport/xray"
 )
@@ -83,7 +84,7 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 		dest = fmt.Sprintf("127.0.0.1:%d", naiveSelfStealPort)
 	}
 
-	return &ProfileState{
+	ps := &ProfileState{
 		Profile: opts.Profile,
 		Domain:  opts.Domain,
 		Email:   opts.Email,
@@ -109,7 +110,59 @@ func generatePlan(opts InstallOptions, rng io.Reader) (*ProfileState, error) {
 			DefaultClientID: clientID,
 			Token:           token,
 		},
-	}, nil
+	}
+
+	if profileNeedsHysteria2(opts.Profile) {
+		hyPass, err := generateHysteria2PasswordFrom(rng)
+		if err != nil {
+			return nil, fmt.Errorf("hysteria2 password: %w", err)
+		}
+		hyPort := opts.Hysteria2Port
+		if hyPort == 0 {
+			hyPort = hysteria2transport.DefaultListenPort
+		}
+		hyMasq := opts.Hysteria2MasqueradeURL
+		if hyMasq == "" {
+			hyMasq = fmt.Sprintf("https://127.0.0.1:%d", naiveSelfStealPort)
+		}
+		ps.Hysteria2 = &Hysteria2State{
+			Password:      hyPass,
+			ListenPort:    hyPort,
+			MasqueradeURL: hyMasq,
+		}
+	}
+
+	return ps, nil
+}
+
+// generateHysteria2PasswordFrom mirrors hysteria2.GenerateAuthPassword
+// (32 random bytes, base64.RawURL) but takes an injectable rng so
+// tests can be deterministic. The implementation is duplicated (not
+// delegated) to keep the orchestrator's plan reproducible from a
+// single rng source.
+func generateHysteria2PasswordFrom(rng io.Reader) (string, error) {
+	var b [32]byte
+	if _, err := io.ReadFull(rng, b[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
+}
+
+// profileNeedsHysteria2 reports whether the named profile contains the
+// hysteria2 transport. Lookup goes through the package's profile
+// registry so a future profile that adds hy2 picks up the right
+// generation behaviour automatically.
+func profileNeedsHysteria2(name string) bool {
+	p, ok := profiles[name]
+	if !ok {
+		return false
+	}
+	for _, t := range p.Transports {
+		if t == "hysteria2" {
+			return true
+		}
+	}
+	return false
 }
 
 const (

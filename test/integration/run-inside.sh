@@ -111,4 +111,17 @@ test "$TOKEN" = "$TOKEN2"
 test "$USER" = "$USER2"
 test "$PASS" = "$PASS2"
 
+log 'home-mobile smoke: cross-profile re-install must be rejected'
+# Cross-profile guard from orchestrator/install.go: state.json tied to
+# home-stealth must reject an install for home-mobile with a clear
+# error so operators do not silently lose state. This runs entirely
+# from cached state — no extra binaries downloaded, no services
+# restarted — so it is safe to chain after the home-stealth checklist.
+if xray-aio install --profile home-mobile --domain "$FQDN" --email '' 2>/tmp/cross.err; then
+    echo 'expected cross-profile install to fail' >&2
+    cat /tmp/cross.err >&2
+    exit 1
+fi
+grep -q 'state holds profile' /tmp/cross.err
+
 log 'integration test passed'

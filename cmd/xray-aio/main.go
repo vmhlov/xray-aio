@@ -77,7 +77,7 @@ func newInstallCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&opts.Profile, "profile", "home-stealth", "preset profile (home-stealth)")
+	cmd.Flags().StringVar(&opts.Profile, "profile", "home-stealth", "preset profile (home-stealth, home-mobile)")
 	cmd.Flags().StringVar(&opts.Domain, "domain", "", "domain name clients use to reach this host (required)")
 	cmd.Flags().StringVar(&opts.Email, "email", "", "email for Let's Encrypt registration (recommended)")
 	cmd.Flags().IntVar(&opts.XrayPort, "xray-port", 0, "override Xray REALITY listen port (default 443)")
@@ -86,6 +86,8 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.NaiveSiteRoot, "naive-site-root", "", "override Naive Caddy file_server root (subscriptions land under <root>/sub/<token>/)")
 	cmd.Flags().IntVar(&opts.NaiveSelfStealPort, "naive-selfsteal-port", 0, "override loopback selfsteal port served by the unified Caddy (default 8443; REALITY upstream)")
 	cmd.Flags().StringVar(&opts.NaiveSelfStealRoot, "naive-selfsteal-root", "", "override directory file_served on the selfsteal port (default /var/lib/xray-aio/selfsteal)")
+	cmd.Flags().IntVar(&opts.Hysteria2Port, "hysteria2-port", 0, "override Hysteria 2 UDP listen port for the home-mobile profile (default 443)")
+	cmd.Flags().StringVar(&opts.Hysteria2MasqueradeURL, "hysteria2-masquerade", "", "override Hysteria 2 masquerade upstream URL (default https://127.0.0.1:<naive-selfsteal-port>)")
 	cmd.Flags().BoolVar(&opts.SkipPreflightOnError, "skip-preflight-errors", false, "proceed even if preflight reports errors (advanced)")
 	return cmd
 }

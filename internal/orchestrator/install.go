@@ -16,6 +16,7 @@ import (
 	"github.com/vmhlov/xray-aio/internal/state"
 	"github.com/vmhlov/xray-aio/internal/subscribe"
 	"github.com/vmhlov/xray-aio/internal/transport"
+	hysteria2transport "github.com/vmhlov/xray-aio/internal/transport/hysteria2"
 	naivetransport "github.com/vmhlov/xray-aio/internal/transport/naive"
 )
 
@@ -62,6 +63,18 @@ type InstallOptions struct {
 	// REALITY relay never reaches /sub/*. Default:
 	// [naive.DefaultSelfStealRoot].
 	NaiveSelfStealRoot string
+
+	// Hysteria2Port overrides the UDP port the hysteria 2 transport
+	// listens on. Only consulted when the profile contains
+	// hysteria2. Default: [hysteria2.DefaultListenPort] (UDP/443).
+	Hysteria2Port int
+
+	// Hysteria2MasqueradeURL overrides the URL hysteria 2 proxies to
+	// when a probe arrives without valid auth. Only consulted when
+	// the profile contains hysteria2. Default:
+	// https://127.0.0.1:<NaiveSelfStealPort> — the same loopback
+	// selfsteal site Caddy already serves with the LE cert.
+	Hysteria2MasqueradeURL string
 
 	// SkipPreflightOnError, when true, downgrades preflight errors
 	// to warnings so install proceeds. Reserved for the operator
@@ -195,6 +208,28 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 				ps.Xray.Dest = fmt.Sprintf("127.0.0.1:%d", ps.Naive.SelfStealPort)
 			}
 		}
+
+		if profileNeedsHysteria2(ps.Profile) {
+			if ps.Hysteria2 == nil {
+				hyPass, err := generateHysteria2PasswordFrom(deps.Rand)
+				if err != nil {
+					return nil, fmt.Errorf("hysteria2 password: %w", err)
+				}
+				ps.Hysteria2 = &Hysteria2State{Password: hyPass}
+			}
+			if opts.Hysteria2Port != 0 {
+				ps.Hysteria2.ListenPort = opts.Hysteria2Port
+			}
+			if ps.Hysteria2.ListenPort == 0 {
+				ps.Hysteria2.ListenPort = hysteria2transport.DefaultListenPort
+			}
+			if opts.Hysteria2MasqueradeURL != "" {
+				ps.Hysteria2.MasqueradeURL = opts.Hysteria2MasqueradeURL
+			}
+			if ps.Hysteria2.MasqueradeURL == "" && ps.Naive != nil {
+				ps.Hysteria2.MasqueradeURL = fmt.Sprintf("https://127.0.0.1:%d", ps.Naive.SelfStealPort)
+			}
+		}
 	}
 
 	// Phase 3: install each transport in profile order.
@@ -305,6 +340,22 @@ func buildTransportOptions(name string, ps *ProfileState) (transport.Options, er
 			Email:  ps.Email,
 			Extra:  extra,
 		}, nil
+	case "hysteria2":
+		if ps.Hysteria2 == nil {
+			return transport.Options{}, errors.New("hysteria2 state missing")
+		}
+		extra := map[string]any{
+			"hysteria2.password":    ps.Hysteria2.Password,
+			"hysteria2.listen_port": ps.Hysteria2.ListenPort,
+		}
+		if ps.Hysteria2.MasqueradeURL != "" {
+			extra["hysteria2.masquerade_url"] = ps.Hysteria2.MasqueradeURL
+		}
+		return transport.Options{
+			Domain: ps.Domain,
+			Email:  ps.Email,
+			Extra:  extra,
+		}, nil
 	default:
 		return transport.Options{}, fmt.Errorf("orchestrator does not know how to configure %q", name)
 	}
@@ -341,12 +392,25 @@ func buildBundle(ps *ProfileState, now time.Time) (subscribe.Bundle, error) {
 	if err != nil {
 		return subscribe.Bundle{}, fmt.Errorf("naive uri: %w", err)
 	}
-	return subscribe.Bundle{
+	bundle := subscribe.Bundle{
 		Label:       "xray-aio: " + ps.Domain,
 		VLESSURIs:   []string{vless},
 		NaiveURIs:   []string{naive},
 		GeneratedAt: now.UTC().Format(time.RFC3339),
-	}, nil
+	}
+	if ps.Hysteria2 != nil {
+		hy2, err := hysteria2transport.RenderURI(hysteria2transport.URIInputs{
+			Domain:   ps.Domain,
+			Port:     ps.Hysteria2.ListenPort,
+			Password: ps.Hysteria2.Password,
+			Tag:      ps.Domain + " (Hysteria2)",
+		})
+		if err != nil {
+			return subscribe.Bundle{}, fmt.Errorf("hysteria2 uri: %w", err)
+		}
+		bundle.Hysteria2URIs = []string{hy2}
+	}
+	return bundle, nil
 }
 
 // writeBundle materialises bundle as static files under

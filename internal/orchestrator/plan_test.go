@@ -151,6 +151,68 @@ func TestGeneratePlanRejectsShortRandomness(t *testing.T) {
 	}
 }
 
+func TestGeneratePlanHomeMobileIncludesHysteria2(t *testing.T) {
+	t.Parallel()
+
+	rng := &deterministicReader{}
+	ps, err := generatePlan(InstallOptions{
+		Profile: "home-mobile",
+		Domain:  "example.com",
+	}, rng)
+	if err != nil {
+		t.Fatalf("generatePlan: %v", err)
+	}
+	if ps.Hysteria2 == nil {
+		t.Fatal("Hysteria2 must be populated for home-mobile")
+	}
+	if ps.Hysteria2.Password == "" {
+		t.Error("Hysteria2.Password empty")
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(ps.Hysteria2.Password); err != nil {
+		t.Errorf("Hysteria2.Password not RawURL b64: %v", err)
+	}
+	if ps.Hysteria2.ListenPort != 443 {
+		t.Errorf("Hysteria2.ListenPort default mismatch: %d", ps.Hysteria2.ListenPort)
+	}
+	if ps.Hysteria2.MasqueradeURL != "https://127.0.0.1:8443" {
+		t.Errorf("Hysteria2.MasqueradeURL default mismatch: %q", ps.Hysteria2.MasqueradeURL)
+	}
+}
+
+func TestGeneratePlanHomeStealthOmitsHysteria2(t *testing.T) {
+	t.Parallel()
+
+	rng := &deterministicReader{}
+	ps, err := generatePlan(InstallOptions{Profile: "home-stealth", Domain: "example.com"}, rng)
+	if err != nil {
+		t.Fatalf("generatePlan: %v", err)
+	}
+	if ps.Hysteria2 != nil {
+		t.Errorf("Hysteria2 must be nil for home-stealth, got %+v", ps.Hysteria2)
+	}
+}
+
+func TestGeneratePlanHomeMobileHonoursHysteria2Overrides(t *testing.T) {
+	t.Parallel()
+
+	rng := &deterministicReader{}
+	ps, err := generatePlan(InstallOptions{
+		Profile:                "home-mobile",
+		Domain:                 "example.com",
+		Hysteria2Port:          12443,
+		Hysteria2MasqueradeURL: "https://example-masq.test",
+	}, rng)
+	if err != nil {
+		t.Fatalf("generatePlan: %v", err)
+	}
+	if ps.Hysteria2.ListenPort != 12443 {
+		t.Errorf("Hysteria2.ListenPort: %d", ps.Hysteria2.ListenPort)
+	}
+	if ps.Hysteria2.MasqueradeURL != "https://example-masq.test" {
+		t.Errorf("Hysteria2.MasqueradeURL: %q", ps.Hysteria2.MasqueradeURL)
+	}
+}
+
 func TestSecretBytesRoundtrip(t *testing.T) {
 	t.Parallel()
 
