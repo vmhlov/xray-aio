@@ -156,6 +156,12 @@ func TestManagerInstall(t *testing.T) {
 		"AmbientCapabilities=CAP_NET_ADMIN",
 		"After=network-online.target",
 		"setconf awg0",
+		// `ip addr add <SERVER_ADDR>` is the wg-quick-equivalent
+		// hop that `awg setconf` cannot do for us, since it
+		// rejects wg-quick directives. validConfig() leaves
+		// ServerAddress empty, so DefaultServerAddress is what
+		// the unit must end up referencing.
+		"ip addr add " + DefaultServerAddress + " dev awg0",
 		"ip link set up dev awg0",
 		"ip link del awg0",
 	} {

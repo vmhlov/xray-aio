@@ -129,9 +129,20 @@ func (c Config) resolvedDefaults() Config {
 // setconf`. Output is stable: config_test.go golden-tests against
 // the exact bytes.
 //
-// Format follows wg-quick(8) (compatible with awg-quick(8) since
-// AmneziaWG keeps the surface schema identical to WireGuard,
-// adding only the obfuscation lines under [Interface]).
+// Format follows the wg(8) CONFIGURATION FILE FORMAT, NOT wg-quick(8).
+// `awg setconf` (like `wg setconf`) only accepts the cryptographic
+// keys: PrivateKey, ListenPort, FwMark under [Interface] and
+// PublicKey, PresharedKey, AllowedIPs, Endpoint, PersistentKeepalive
+// under [Peer], plus AmneziaWG's obfuscation extensions (Jc, Jmin,
+// Jmax, S1, S2, H1..H4) under [Interface]. Any wg-quick directive
+// (Address, DNS, MTU, Table, PreUp/PostUp/...) makes setconf abort
+// with `Configuration parsing error: Line unrecognized: ...`. So the
+// server-side render deliberately omits Address/DNS/MTU; the systemd
+// unit applies the server address out-of-band via `ip addr add`.
+//
+// RenderPeer below DOES emit Address/DNS/MTU because the peer
+// imports the file into the AmneziaWG client (mobile/desktop GUI
+// or awg-quick), which is the wg-quick consumer surface.
 func Render(cfg Config) (string, error) {
 	if err := cfg.Validate(); err != nil {
 		return "", err
@@ -140,9 +151,10 @@ func Render(cfg Config) (string, error) {
 
 	var b strings.Builder
 	b.WriteString("# Managed by xray-aio. Do not edit by hand — re-run `xray-aio install`.\n")
+	b.WriteString("# Server address is applied by the systemd unit's `ip addr add` hook,\n")
+	b.WriteString("# not by `awg setconf`, which rejects wg-quick directives.\n")
 	b.WriteString("[Interface]\n")
 	fmt.Fprintf(&b, "PrivateKey = %s\n", cfg.PrivateKey)
-	fmt.Fprintf(&b, "Address = %s\n", cfg.ServerAddress)
 	fmt.Fprintf(&b, "ListenPort = %d\n", cfg.ListenPort)
 	writeObfuscation(&b, cfg.Obfuscation)
 	b.WriteString("\n[Peer]\n")
