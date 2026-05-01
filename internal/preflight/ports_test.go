@@ -159,6 +159,38 @@ func TestLookupPortHolderUnitWithFakeProc(t *testing.T) {
 	}
 }
 
+func TestCheckAmneziaWGUDPFree(t *testing.T) {
+	port := pickFreeUDPPort(t)
+	c := checkAmneziaWGUDP(context.Background(), port)
+	if c.Status != StatusOK {
+		t.Fatalf("status=%s msg=%q; want ok", c.Status, c.Message)
+	}
+	if c.Name != "amneziawg-udp" {
+		t.Errorf("name=%q; want amneziawg-udp", c.Name)
+	}
+}
+
+func TestCheckAmneziaWGUDPBusyIsHardError(t *testing.T) {
+	// AmneziaWG IS the home-vpn data plane: a busy listen port is
+	// a hard error (not the soft warn that checkPort443UDP returns
+	// for hysteria 2 / quic). Bind a UDP socket ourselves and assert
+	// the check surfaces StatusError, not StatusWarn — this is the
+	// behavioural contract Install relies on to abort early.
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	c := checkAmneziaWGUDP(context.Background(), port)
+	if c.Status != StatusError {
+		t.Fatalf("status=%s msg=%q; want error (not warn — AmneziaWG cannot fall back)", c.Status, c.Message)
+	}
+	if !contains(c.Message, "in use") {
+		t.Errorf("message=%q; want it to mention `in use`", c.Message)
+	}
+}
+
 func TestLookupPortHolderUnitForeignServiceReturnsEmpty(t *testing.T) {
 	root := t.TempDir()
 	prevRoot := procRoot

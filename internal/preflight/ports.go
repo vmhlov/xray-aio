@@ -71,6 +71,26 @@ func checkUDPPort(ctx context.Context, port int, name string) Check {
 	return Check{Name: name, Status: StatusOK, Message: fmt.Sprintf("udp/%d free", port)}
 }
 
+// checkAmneziaWGUDP probes the configurable AmneziaWG listen port.
+// Unlike [checkPort443UDP] (where UDP 443 is optional / Hysteria 2),
+// AmneziaWG IS the home-vpn profile's data plane — a busy port is a
+// hard error so [Install] does not silently land in a state where
+// systemd boots the unit but the kernel rejects bind().
+func checkAmneziaWGUDP(ctx context.Context, port int) Check {
+	const name = "amneziawg-udp"
+	addr := net.JoinHostPort("", strconv.Itoa(port))
+	lc := net.ListenConfig{}
+	pc, err := lc.ListenPacket(ctx, "udp", addr)
+	if err != nil {
+		if isPermissionDenied(err) && !isRoot() {
+			return Check{Name: name, Status: StatusWarn, Message: fmt.Sprintf("udp/%d: needs root to probe (re-run as root)", port)}
+		}
+		return Check{Name: name, Status: StatusError, Message: fmt.Sprintf("udp/%d in use: %v", port, err)}
+	}
+	_ = pc.Close()
+	return Check{Name: name, Status: StatusOK, Message: fmt.Sprintf("udp/%d free", port)}
+}
+
 // isRoot is mocked in tests via [setIsRoot].
 var isRoot = func() bool { return os.Geteuid() == 0 }
 

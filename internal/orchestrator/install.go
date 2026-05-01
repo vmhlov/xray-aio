@@ -153,7 +153,7 @@ func Install(ctx context.Context, opts InstallOptions, deps Deps) (*InstallResul
 	if err != nil {
 		return nil, err
 	}
-	deps = applyDefaults(deps)
+	deps = applyDefaults(opts, deps)
 
 	// Phase 1: preflight. [preflight.Run] returns a non-nil err
 	// whenever any check fails; the caller still gets a populated
@@ -722,13 +722,16 @@ func subscriptionURL(ps *ProfileState) string {
 }
 
 // applyDefaults fills in the production defaults for any unset Deps
-// field.
-func applyDefaults(d Deps) Deps {
+// field. opts is consulted when the default PreflightFn needs to be
+// profile-aware — the home-vpn profile, for instance, requires the
+// AmneziaWG UDP listen port and /dev/net/tun checks that
+// home-stealth and home-mobile do not.
+func applyDefaults(opts InstallOptions, d Deps) Deps {
 	if d.Rand == nil {
 		d.Rand = defaultRand
 	}
 	if d.PreflightFn == nil {
-		d.PreflightFn = preflight.Run
+		d.PreflightFn = defaultPreflightFn(opts)
 	}
 	if d.NewTransport == nil {
 		d.NewTransport = transport.Get
@@ -737,6 +740,25 @@ func applyDefaults(d Deps) Deps {
 		d.Now = time.Now
 	}
 	return d
+}
+
+// defaultPreflightFn closes over the install options so the
+// preflight suite picks up profile-specific checks (currently:
+// AmneziaWG when the profile contains it). Tests that want to
+// bypass the standard suite still set Deps.PreflightFn explicitly
+// and skip this branch entirely.
+func defaultPreflightFn(opts InstallOptions) func(ctx context.Context) (preflight.Result, error) {
+	pfOpts := preflight.Options{}
+	if profileNeedsAmneziaWG(opts.Profile) {
+		port := opts.AmneziaWGListenPort
+		if port == 0 {
+			port = amneziawgtransport.DefaultListenPort
+		}
+		pfOpts.AmneziaWGListenPort = port
+	}
+	return func(ctx context.Context) (preflight.Result, error) {
+		return preflight.RunWith(ctx, pfOpts)
+	}
 }
 
 // countStatus is a small helper duplicated from the cmd package to

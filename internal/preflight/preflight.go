@@ -76,11 +76,47 @@ var defaultChecks = []CheckFunc{
 	checkDNS,
 }
 
-// Run executes the standard preflight suite.
+// Options narrows the preflight suite to a specific install profile.
+// Zero value runs the standard suite (every profile gets at least
+// the OS / kernel / generic-port / DNS checks).
+type Options struct {
+	// AmneziaWGListenPort, when > 0, adds two AmneziaWG-specific
+	// checks to the suite: the configurable UDP listen port must be
+	// free, and /dev/net/tun (or [DevNetTUNPath]) must be a
+	// character device openable RDWR. Both surface as hard errors —
+	// without them, the home-vpn profile's data plane cannot bind.
+	AmneziaWGListenPort int
+
+	// DevNetTUNPath overrides the path checked when
+	// AmneziaWGListenPort > 0. Tests under [t.TempDir] use this to
+	// drive the negative branches without mucking with the real
+	// /dev/net/tun. Empty string falls back to
+	// [DefaultDevNetTUNPath].
+	DevNetTUNPath string
+}
+
+// Run executes the standard preflight suite. Equivalent to
+// [RunWith] with the zero [Options].
 func Run(ctx context.Context) (Result, error) {
+	return RunWith(ctx, Options{})
+}
+
+// RunWith executes the standard preflight suite plus any
+// profile-specific checks selected by opts. Returned err is
+// non-nil whenever the result has any [StatusError] check, even
+// when the suite otherwise completed; callers that want to
+// downgrade individual failures to warnings should consult
+// [Result.HasErrors] instead.
+func RunWith(ctx context.Context, opts Options) (Result, error) {
 	r := Result{OS: runtime.GOOS, Arch: runtime.GOARCH}
 	for _, fn := range defaultChecks {
 		r.Checks = append(r.Checks, fn(ctx))
+	}
+	if opts.AmneziaWGListenPort > 0 {
+		r.Checks = append(r.Checks,
+			checkAmneziaWGUDP(ctx, opts.AmneziaWGListenPort),
+			checkDevNetTUN(opts.DevNetTUNPath),
+		)
 	}
 	sort.SliceStable(r.Checks, func(i, j int) bool { return r.Checks[i].Name < r.Checks[j].Name })
 	if r.HasErrors() {
