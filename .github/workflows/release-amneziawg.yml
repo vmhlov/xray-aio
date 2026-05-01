@@ -153,47 +153,54 @@ jobs:
           ref: ${{ steps.ver.outputs.upstream }}
           path: amneziawg-tools
 
-      - name: Install cross-compile toolchain
+      - name: Build linux/{amd64,arm64} inside debian:bullseye-slim
+        # Why a container? `awg` is dynamically linked C; building on
+        # the ubuntu-latest runner (glibc 2.39) produces a binary with
+        # GLIBC_2.33+/2.34/2.38 symbol references, which fails to load
+        # on Debian 11 (glibc 2.31), Ubuntu 20.04 (glibc 2.31), Debian
+        # 12 (glibc 2.36), and any other distro older than ubuntu-24.
+        # debian:bullseye-slim ships glibc 2.31, the lowest baseline
+        # we support, so the resulting binary loads on bullseye+.
         run: |
           set -euo pipefail
-          sudo apt-get update
-          # gcc-aarch64-linux-gnu ships only the cross compiler.
-          # libc6-dev-arm64-cross is the matching cross sysroot
-          # (arm64 libc headers + crt*.o under /usr/aarch64-linux-gnu/);
-          # without it, aarch64-linux-gnu-gcc falls back to host
-          # /usr/include and fails on bits/libc-header-start.h.
-          sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu \
-            libc6-dev-arm64-cross
-
-      - name: Build linux/amd64
-        working-directory: amneziawg-tools/src
-        run: |
-          set -euo pipefail
-          # Disable everything we do not ship: bash completion, the
-          # awg-quick wrapper, and the systemd units (xray-aio writes
-          # its own unit). The Makefile's `wg` target produces the
-          # CLI tool that gets renamed to `awg` on install — we mimic
-          # that rename when we copy out.
-          make wg \
-            CC=cc \
-            WITH_BASHCOMPLETION=no \
-            WITH_WGQUICK=no \
-            WITH_SYSTEMDUNITS=no
-          mkdir -p ../../dist
-          mv wg ../../dist/awg-linux-amd64
-          make clean
-
-      - name: Build linux/arm64
-        working-directory: amneziawg-tools/src
-        run: |
-          set -euo pipefail
-          make wg \
-            CC=aarch64-linux-gnu-gcc \
-            WITH_BASHCOMPLETION=no \
-            WITH_WGQUICK=no \
-            WITH_SYSTEMDUNITS=no
-          mv wg ../../dist/awg-linux-arm64
+          mkdir -p dist
+          # Mount the host workspace so the build artefacts end up
+          # back on the runner for sha256 + smoke + upload steps.
+          docker run --rm \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -v "${PWD}:/work" \
+            -w /work/amneziawg-tools/src \
+            debian:bullseye-slim \
+            bash -ec '
+              apt-get update
+              # gcc-aarch64-linux-gnu ships only the cross compiler.
+              # libc6-dev-arm64-cross is the matching cross sysroot
+              # (arm64 libc headers + crt*.o under /usr/aarch64-linux-gnu/);
+              # without it, aarch64-linux-gnu-gcc falls back to the
+              # container /usr/include and fails on bits/libc-header-start.h.
+              apt-get install -y --no-install-recommends \
+                build-essential \
+                gcc-aarch64-linux-gnu \
+                libc6-dev-arm64-cross
+              # Disable everything we do not ship: bash completion,
+              # the awg-quick wrapper, and the systemd units (xray-aio
+              # writes its own unit). The Makefile target `wg`
+              # produces the CLI binary upstream renames to `awg` on
+              # install — we mimic that rename when we copy out.
+              make wg \
+                CC=cc \
+                WITH_BASHCOMPLETION=no \
+                WITH_WGQUICK=no \
+                WITH_SYSTEMDUNITS=no
+              mv wg /work/dist/awg-linux-amd64
+              make clean
+              make wg \
+                CC=aarch64-linux-gnu-gcc \
+                WITH_BASHCOMPLETION=no \
+                WITH_WGQUICK=no \
+                WITH_SYSTEMDUNITS=no
+              mv wg /work/dist/awg-linux-arm64
+            '
 
       - name: SHA256 sidecars
         working-directory: dist
@@ -203,7 +210,7 @@ jobs:
             sha256sum "$f" | tee "$f.sha256"
           done
 
-      - name: Smoke test (amd64 binary `awg --version`)
+      - name: Smoke test (amd64 binary `awg --version` + glibc baseline)
         run: |
           set -euo pipefail
           chmod +x dist/awg-linux-amd64
@@ -212,6 +219,28 @@ jobs:
           # `awg` is the renamed `wg`; a bare `--version` writes to
           # stderr and exits 0. Pin that the binary at least executes.
           dist/awg-linux-amd64 --version
+          # Pin the bullseye-baseline glibc requirement. PR #29's first
+          # release shipped an awg built against ubuntu-24's glibc 2.39
+          # which then crashed on Debian 11 (glibc 2.31) with
+          # `version GLIBC_2.34 not found`. If a future change ever
+          # silently regresses the build environment, this assertion
+          # catches it inside CI before the asset reaches a release.
+          for asset in dist/awg-linux-amd64 dist/awg-linux-arm64; do
+            max=$(readelf -V "$asset" \
+              | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' \
+              | sed 's/^GLIBC_//' \
+              | sort -uV \
+              | tail -1)
+            if [ -z "$max" ]; then
+              echo "warn: $asset has no GLIBC version requirements (static or LTO-stripped?)"
+              continue
+            fi
+            echo "$asset: highest GLIBC_${max}"
+            if ! awk -v v="$max" 'BEGIN { split(v,a,"."); if (a[1]>2 || (a[1]==2 && a[2]>31)) exit 1 }'; then
+              echo "::error::$asset references GLIBC_${max} (> 2.31); would fail on Debian 11"
+              exit 1
+            fi
+          done
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
