@@ -652,11 +652,19 @@ func TestInstallHomeMobileWiresHysteria2(t *testing.T) {
 	if hy2Extra["hysteria2.listen_port"].(int) != 443 {
 		t.Errorf("hysteria2.listen_port in Extra: %v", hy2Extra["hysteria2.listen_port"])
 	}
-	// Default-style loopback masquerade MUST set masquerade_insecure=true
-	// so hy2's loopback dial to Caddy doesn't fail SNI verification
-	// (Caddy's site is bound to <Domain>:<port>, hy2 SNIs as 127.0.0.1).
-	if v, ok := hy2Extra["hysteria2.masquerade_insecure"].(bool); !ok || !v {
-		t.Errorf("hysteria2.masquerade_insecure = %v (set/bool=%v); want true for loopback masquerade", hy2Extra["hysteria2.masquerade_insecure"], ok)
+	// Default-style masquerade MUST be domain-based, not loopback —
+	// see plan.go's commentary. SNI must match Caddy's strict site
+	// definition (`<Domain>:<SelfStealPort>`) or the upstream TLS
+	// handshake fails and active probes get a 502 instead of the
+	// convincing selfsteal HTML.
+	if got, _ := hy2Extra["hysteria2.masquerade_url"].(string); got != "https://example.com:8443" {
+		t.Errorf("hysteria2.masquerade_url = %q, want https://example.com:8443 (domain-based default)", got)
+	}
+	// Conversely, masquerade_insecure must NOT be set: the new
+	// domain-based default upstream gets a real cert match, no skip
+	// needed.
+	if v, ok := hy2Extra["hysteria2.masquerade_insecure"]; ok {
+		t.Errorf("hysteria2.masquerade_insecure must be unset for domain-based default; got %v", v)
 	}
 	plain, err := os.ReadFile(filepath.Join(res.BundleDir, "plain.txt"))
 	if err != nil {
@@ -674,10 +682,13 @@ func TestInstallHomeMobileWiresHysteria2(t *testing.T) {
 	}
 }
 
-// External operator-pinned masquerade MUST keep cert verification on
-// (the upstream is genuinely public, MITM verification matters there).
-// Conversely, the loopback default in TestInstallHomeMobileWiresHysteria2
-// MUST flip insecure on. These two together pin the precedence.
+// External operator-pinned masquerade keeps cert verification on
+// (the upstream is genuinely public, MITM verification matters
+// there). The default home-mobile install in
+// TestInstallHomeMobileWiresHysteria2 also leaves it unset because
+// the new domain-based default upstream gets a real LE cert match.
+// `masquerade_insecure` is reserved for an explicit operator opt-in
+// in a future PR.
 func TestInstallHomeMobileExternalMasqueradeKeepsTLSVerify(t *testing.T) {
 	statePath, siteRoot := setupTestState(t)
 	xray := &fakeTransport{name: "xray"}
@@ -798,7 +809,7 @@ func TestInstallReinstallHomeMobilePreservesPasswordRotatesPort(t *testing.T) {
 }
 
 // On re-install with a new --naive-selfsteal-port, Hysteria2.MasqueradeURL
-// must follow the new port when it's still default-style (loopback) —
+// must follow the new port when it's still default-style (domain-based) —
 // else hy2's masquerade points to a port nothing listens on, active DPI
 // probes get connection-error instead of a convincing site, and the
 // proxy is fingerprintable. Mirrors TestInstallReinstallSyncsXrayDestWithSelfStealPort.
@@ -837,12 +848,65 @@ func TestInstallReinstallSyncsHysteria2MasqueradeWithSelfStealPort(t *testing.T)
 	if err != nil {
 		t.Fatalf("second install: %v", err)
 	}
-	if got := res.State.Hysteria2.MasqueradeURL; got != "https://127.0.0.1:9443" {
-		t.Errorf("Hysteria2.MasqueradeURL = %q, want https://127.0.0.1:9443 (must follow new SelfStealPort)", got)
+	if got := res.State.Hysteria2.MasqueradeURL; got != "https://example.com:9443" {
+		t.Errorf("Hysteria2.MasqueradeURL = %q, want https://example.com:9443 (must follow new SelfStealPort with Domain)", got)
 	}
 	hy2Extra := hy2.installCalls[len(hy2.installCalls)-1].Extra
-	if got, _ := hy2Extra["hysteria2.masquerade_url"].(string); got != "https://127.0.0.1:9443" {
-		t.Errorf("hysteria2.masquerade_url in Extra = %q, want https://127.0.0.1:9443", got)
+	if got, _ := hy2Extra["hysteria2.masquerade_url"].(string); got != "https://example.com:9443" {
+		t.Errorf("hysteria2.masquerade_url in Extra = %q, want https://example.com:9443", got)
+	}
+}
+
+// State files written by xray-aio < #21 hold a loopback masquerade
+// URL (https://127.0.0.1:<SelfStealPort>) which now causes a TLS SNI
+// mismatch against Caddy and a 502 on probes. On re-install with a
+// recognized legacy-loopback URL in state, the orchestrator MUST
+// rewrite it to the new domain-based default so the regression is
+// healed silently — operators don't have to know about the SNI
+// gotcha and don't need to manually edit state.json.
+func TestInstallReinstallMigratesLegacyLoopbackMasquerade(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	hy2 := &fakeTransport{name: "hysteria2"}
+	mkDeps := func() Deps {
+		return Deps{
+			Rand:        &deterministicReader{},
+			PreflightFn: stubPreflight,
+			NewTransport: func(name string) (transport.Transport, error) {
+				switch name {
+				case "xray":
+					return xray, nil
+				case "naive":
+					return naive, nil
+				case "hysteria2":
+					return hy2, nil
+				}
+				return nil, errors.New("unknown")
+			},
+			StatePath: statePath,
+		}
+	}
+	// Simulate state.json from xray-aio < #21: pin loopback URL.
+	if _, err := Install(context.Background(), InstallOptions{
+		Profile:                "home-mobile",
+		Domain:                 "example.com",
+		NaiveSiteRoot:          siteRoot,
+		Hysteria2MasqueradeURL: "https://127.0.0.1:8443",
+	}, mkDeps()); err != nil {
+		t.Fatalf("seed install: %v", err)
+	}
+	// Re-install with no override (default-style migration).
+	res, err := Install(context.Background(), InstallOptions{
+		Profile:       "home-mobile",
+		Domain:        "example.com",
+		NaiveSiteRoot: siteRoot,
+	}, mkDeps())
+	if err != nil {
+		t.Fatalf("re-install: %v", err)
+	}
+	if got := res.State.Hysteria2.MasqueradeURL; got != "https://example.com:8443" {
+		t.Errorf("Hysteria2.MasqueradeURL = %q, want https://example.com:8443 (legacy loopback must be migrated)", got)
 	}
 }
 
