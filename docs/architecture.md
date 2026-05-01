@@ -67,7 +67,7 @@ TLS-fingerprint, **CDN** = можно фронтить через Cloudflare,
 | Профиль | Состав |
 |---|---|
 | `home-stealth` (default) | VLESS REALITY (Vision) + naive forward_proxy + selfsteal под единым Caddy с ACME HTTP-01 |
-| `home-mobile` | `home-stealth` + Hysteria 2 |
+| `home-mobile` | `home-stealth` + Hysteria 2 (UDP/QUIC, переиспользует LE-cert Caddy) |
 | `home-cdn` | VLESS WS/gRPC + Trojan WS за CF |
 | `bridge-ru-eu` | Российская нода → ЕС-нода через REALITY-XHTTP |
 | `paranoid` | всё перечисленное + AmneziaWG + MTProto FakeTLS |

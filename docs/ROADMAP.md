@@ -27,7 +27,9 @@
 ## Phase 2 — расширение транспортов
 
 PR на каждый, изолированно:
-- `transport/hysteria2`
+- 2.1 ✅`transport/hysteria2` — пакет (#17)
+- 2.1b ✅orchestrator-wiring — профиль `home-mobile` (REALITY+naive+selfsteal+hy2),
+  CLI-флаги `--hysteria2-port` / `--hysteria2-masquerade`, hy2:// URI в подписке
 - `transport/amneziawg`
 - `transport/mtproto` (вынос из autoXRAY/test/)
 - `transport/trojan`

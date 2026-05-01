@@ -27,9 +27,22 @@ var ProfileHomeStealth = Profile{
 	Transports:  []string{"xray", "naive"},
 }
 
+// ProfileHomeMobile extends home-stealth with a Hysteria 2 (UDP/QUIC)
+// listener that piggybacks on Caddy's LE cert. Order matters: naive
+// must Install before hysteria2 so /var/lib/caddy/...<domain>.crt
+// exists when hysteria2's systemd unit starts. Use this profile when
+// UDP/443 is reachable from the client side; if the network blocks
+// UDP, fall back to home-stealth (TCP-only).
+var ProfileHomeMobile = Profile{
+	Name:        "home-mobile",
+	Description: "VLESS REALITY (Vision) + NaïveProxy + Hysteria 2 (UDP/QUIC).",
+	Transports:  []string{"xray", "naive", "hysteria2"},
+}
+
 // profiles is the registry of known profiles. Lookup is via [ResolveProfile].
 var profiles = map[string]Profile{
 	ProfileHomeStealth.Name: ProfileHomeStealth,
+	ProfileHomeMobile.Name:  ProfileHomeMobile,
 }
 
 // ResolveProfile returns the Profile by name or an error listing valid

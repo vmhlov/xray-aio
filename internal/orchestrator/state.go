@@ -23,6 +23,7 @@ type ProfileState struct {
 
 	Xray         *XrayState         `json:"xray,omitempty"`
 	Naive        *NaiveState        `json:"naive,omitempty"`
+	Hysteria2    *Hysteria2State    `json:"hysteria2,omitempty"`
 	Subscription *SubscriptionState `json:"subscription,omitempty"`
 }
 
@@ -50,6 +51,17 @@ type NaiveState struct {
 	SiteRoot        string `json:"site_root"`
 	SelfStealPort   int    `json:"selfsteal_port,omitempty"`
 	SelfStealRoot   string `json:"selfsteal_root,omitempty"`
+}
+
+// Hysteria2State is the orchestrator-owned snapshot of the Hysteria 2
+// install. Cert reuse follows the home-mobile profile contract: the
+// hysteria2 systemd unit reads Caddy's LE cert in /var/lib/caddy/...,
+// so we don't persist cert/key paths here — the transport derives
+// them from Domain.
+type Hysteria2State struct {
+	Password      string `json:"password"`
+	ListenPort    int    `json:"listen_port"`
+	MasqueradeURL string `json:"masquerade_url,omitempty"`
 }
 
 // SubscriptionState is the per-host subscription secret plus the token
