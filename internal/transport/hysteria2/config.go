@@ -49,6 +49,27 @@ type Config struct {
 	// derive from Domain.
 	CertPath string
 	KeyPath  string
+
+	// MasqueradeInsecure tells the masquerade.proxy upstream dialer
+	// to skip TLS certificate verification.
+	//
+	// When the masquerade upstream is the loopback Caddy selfsteal
+	// site (https://127.0.0.1:<SelfStealPort>), hy2 will SNI the
+	// upstream with the literal "127.0.0.1" — but Caddy's site
+	// definition is `<domain>:<SelfStealPort>` and rejects any other
+	// SNI, so the TLS handshake fails with `internal error` and
+	// active probes get a bare 502 instead of the convincing
+	// selfsteal HTML.
+	//
+	// Setting this true skips that verification on the loopback hop
+	// only — the real client→server hy2 leg is still cert-checked
+	// against Domain. Hysteria 2 supports this via
+	// `masquerade.proxy.insecure: true` (since v2.6.0).
+	//
+	// The orchestrator turns this on automatically whenever the
+	// masquerade URL is the default-style loopback. An operator who
+	// pins a public masquerade gets the safer default of false.
+	MasqueradeInsecure bool
 }
 
 // Validate returns nil when cfg can be rendered. Pure data-shape
@@ -114,5 +135,8 @@ func Render(cfg Config) (string, error) {
 	b.WriteString("  proxy:\n")
 	fmt.Fprintf(&b, "    url: %s\n", masq)
 	b.WriteString("    rewriteHost: true\n")
+	if cfg.MasqueradeInsecure {
+		b.WriteString("    insecure: true\n")
+	}
 	return b.String(), nil
 }

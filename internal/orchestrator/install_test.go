@@ -652,6 +652,12 @@ func TestInstallHomeMobileWiresHysteria2(t *testing.T) {
 	if hy2Extra["hysteria2.listen_port"].(int) != 443 {
 		t.Errorf("hysteria2.listen_port in Extra: %v", hy2Extra["hysteria2.listen_port"])
 	}
+	// Default-style loopback masquerade MUST set masquerade_insecure=true
+	// so hy2's loopback dial to Caddy doesn't fail SNI verification
+	// (Caddy's site is bound to <Domain>:<port>, hy2 SNIs as 127.0.0.1).
+	if v, ok := hy2Extra["hysteria2.masquerade_insecure"].(bool); !ok || !v {
+		t.Errorf("hysteria2.masquerade_insecure = %v (set/bool=%v); want true for loopback masquerade", hy2Extra["hysteria2.masquerade_insecure"], ok)
+	}
 	plain, err := os.ReadFile(filepath.Join(res.BundleDir, "plain.txt"))
 	if err != nil {
 		t.Fatalf("read plain: %v", err)
@@ -665,6 +671,45 @@ func TestInstallHomeMobileWiresHysteria2(t *testing.T) {
 	}
 	if !strings.Contains(body, "hysteria2://") {
 		t.Errorf("plain.txt missing hysteria2://: %s", body)
+	}
+}
+
+// External operator-pinned masquerade MUST keep cert verification on
+// (the upstream is genuinely public, MITM verification matters there).
+// Conversely, the loopback default in TestInstallHomeMobileWiresHysteria2
+// MUST flip insecure on. These two together pin the precedence.
+func TestInstallHomeMobileExternalMasqueradeKeepsTLSVerify(t *testing.T) {
+	statePath, siteRoot := setupTestState(t)
+	xray := &fakeTransport{name: "xray"}
+	naive := &fakeTransport{name: "naive"}
+	hy2 := &fakeTransport{name: "hysteria2"}
+	deps := Deps{
+		Rand:        &deterministicReader{},
+		PreflightFn: stubPreflight,
+		NewTransport: func(name string) (transport.Transport, error) {
+			switch name {
+			case "xray":
+				return xray, nil
+			case "naive":
+				return naive, nil
+			case "hysteria2":
+				return hy2, nil
+			}
+			return nil, errors.New("unknown")
+		},
+		StatePath: statePath,
+	}
+	if _, err := Install(context.Background(), InstallOptions{
+		Profile:                "home-mobile",
+		Domain:                 "example.com",
+		NaiveSiteRoot:          siteRoot,
+		Hysteria2MasqueradeURL: "https://news.ycombinator.com",
+	}, deps); err != nil {
+		t.Fatalf("Install home-mobile: %v", err)
+	}
+	hy2Extra := hy2.installCalls[0].Extra
+	if v, ok := hy2Extra["hysteria2.masquerade_insecure"]; ok {
+		t.Errorf("hysteria2.masquerade_insecure must be unset for external masquerade; got %v", v)
 	}
 }
 

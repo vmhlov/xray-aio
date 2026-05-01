@@ -35,10 +35,11 @@ func (t *transportImpl) Name() string { return Name }
 //
 // Optional Extra keys (with defaults):
 //
-//	hysteria2.listen_port      int     (DefaultListenPort)
-//	hysteria2.masquerade_url   string  (DefaultMasqueradeURL)
-//	hysteria2.cert_path        string  (Caddy LE for Domain)
-//	hysteria2.key_path         string  (Caddy LE for Domain)
+//	hysteria2.listen_port         int     (DefaultListenPort)
+//	hysteria2.masquerade_url      string  (DefaultMasqueradeURL)
+//	hysteria2.masquerade_insecure bool    (false)
+//	hysteria2.cert_path           string  (Caddy LE for Domain)
+//	hysteria2.key_path            string  (Caddy LE for Domain)
 func (t *transportImpl) Install(ctx context.Context, opts transport.Options) error {
 	cfg, err := configFromOptions(opts)
 	if err != nil {
@@ -93,10 +94,11 @@ func configFromOptions(opts transport.Options) (Config, error) {
 		return Config{}, errors.New("Options.Domain is required")
 	}
 	cfg := Config{
-		Domain:        opts.Domain,
-		MasqueradeURL: stringFrom(opts.Extra, "hysteria2.masquerade_url", ""),
-		CertPath:      stringFrom(opts.Extra, "hysteria2.cert_path", ""),
-		KeyPath:       stringFrom(opts.Extra, "hysteria2.key_path", ""),
+		Domain:             opts.Domain,
+		MasqueradeURL:      stringFrom(opts.Extra, "hysteria2.masquerade_url", ""),
+		MasqueradeInsecure: boolFrom(opts.Extra, "hysteria2.masquerade_insecure", false),
+		CertPath:           stringFrom(opts.Extra, "hysteria2.cert_path", ""),
+		KeyPath:            stringFrom(opts.Extra, "hysteria2.key_path", ""),
 	}
 	password, err := requiredString(opts.Extra, "hysteria2.password")
 	if err != nil {
@@ -139,6 +141,19 @@ func requiredString(m map[string]any, key string) (string, error) {
 		return "", fmt.Errorf("Extra[%q] is empty", key)
 	}
 	return s, nil
+}
+
+// boolFrom returns m[key] when present and a bool, otherwise def.
+func boolFrom(m map[string]any, key string, def bool) bool {
+	v, ok := m[key]
+	if !ok {
+		return def
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return def
+	}
+	return b
 }
 
 // intFrom accepts int, int64, float64, or numeric strings and returns
