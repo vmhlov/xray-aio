@@ -3,7 +3,10 @@ package amneziawg
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,7 +26,7 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte
 }
 
 type fakeDownloader struct {
-	bodies []*bytes.Reader
+	bodies [][]byte
 	idx    int
 	err    error
 }
@@ -35,20 +38,41 @@ func (f *fakeDownloader) Get(_ context.Context, _ string) (io.ReadCloser, error)
 	if f.idx >= len(f.bodies) {
 		// Return empty body for any unscripted call so tests that
 		// don't care about the precise number of fetches still get
-		// past ensureBinaries.
-		return io.NopCloser(bytes.NewReader([]byte{})), nil
+		// past ensureBinaries (where they'd then trip the sha256
+		// sidecar parser — which is the contract we want).
+		return io.NopCloser(bytes.NewReader(nil)), nil
 	}
-	rc := io.NopCloser(f.bodies[f.idx])
+	p := f.bodies[f.idx]
 	f.idx++
-	return rc, nil
+	return io.NopCloser(bytes.NewReader(p)), nil
 }
 
+// newFakeDL builds a sequential fake whose response stream alternates
+// the auto-derived sha256 sidecar and the payload itself, in the
+// order the production [Manager.fetchAndVerify] requests them. So a
+// caller passing two binary payloads gets four scripted bodies:
+// (sum1, payload1, sum2, payload2). This matches the on-the-wire
+// contract of the release workflow that PR #29 lands.
 func newFakeDL(payloads ...[]byte) *fakeDownloader {
-	rs := make([]*bytes.Reader, len(payloads))
-	for i, p := range payloads {
-		rs[i] = bytes.NewReader(p)
+	bodies := make([][]byte, 0, 2*len(payloads))
+	for _, p := range payloads {
+		bodies = append(bodies, sha256SidecarFor(p), p)
 	}
-	return &fakeDownloader{bodies: rs}
+	return &fakeDownloader{bodies: bodies}
+}
+
+// newRawFakeDL is the escape hatch for adversarial tests that need
+// to inject a sidecar with a deliberately wrong / malformed digest;
+// payloads are returned in order without any auto-derivation.
+func newRawFakeDL(payloads ...[]byte) *fakeDownloader {
+	return &fakeDownloader{bodies: payloads}
+}
+
+// sha256SidecarFor returns the bytes the release workflow's
+// `sha256sum` step would write for payload — "<hex>  asset\n".
+func sha256SidecarFor(payload []byte) []byte {
+	sum := sha256.Sum256(payload)
+	return []byte(fmt.Sprintf("%s  asset\n", hex.EncodeToString(sum[:])))
 }
 
 func newTestPaths(t *testing.T) Paths {
@@ -298,6 +322,137 @@ func TestToolDownloadURL(t *testing.T) {
 	}
 	if !strings.Contains(got, "amneziawg-tools-v1.0.20260223") {
 		t.Errorf("expected tools tag in URL, got %q", got)
+	}
+}
+
+func TestManagerInstallRejectsSHA256Mismatch(t *testing.T) {
+	// The release workflow uploads `<binary>` and `<binary>.sha256`
+	// side-by-side. If the .sha256 sidecar disagrees with the
+	// streamed body's hash, fetchAndVerify must remove the
+	// half-written file and abort \u2014 not silently install a binary
+	// whose integrity we cannot vouch for.
+	paths := newTestPaths(t)
+	daemonPayload := []byte("\x7fELF fake amneziawg-go body")
+	// Sidecar advertises the digest of a DIFFERENT payload. Pin
+	// the mismatch to a non-matching but well-formed 64-hex value
+	// so we exercise the hash compare, not the parser.
+	wrongSum := sha256SidecarFor([]byte("not the real payload"))
+	dl := newRawFakeDL(wrongSum, daemonPayload)
+	m := &Manager{Paths: paths, Runner: &fakeRunner{}, Downloader: dl}
+
+	err := m.Install(context.Background(), validConfig())
+	if err == nil {
+		t.Fatal("expected error from sha256 mismatch")
+	}
+	if !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Errorf("error %q; want it to mention `sha256 mismatch`", err)
+	}
+	if _, statErr := os.Stat(paths.BinaryDaemon); !os.IsNotExist(statErr) {
+		t.Errorf("daemon binary still on disk after mismatch: stat err=%v", statErr)
+	}
+}
+
+func TestManagerInstallRejectsMalformedSHA256Sidecar(t *testing.T) {
+	// A sidecar that does not start with 64 hex chars is treated
+	// as a hard error \u2014 we don't fall back to "install
+	// unverified". Common cause would be a 404 page body picked up
+	// by mistake (the release asset path was wrong) or a
+	// transport-truncated download.
+	paths := newTestPaths(t)
+	daemonPayload := []byte("\x7fELF fake amneziawg-go body")
+	dl := newRawFakeDL([]byte("<html>404 Not Found</html>\n"), daemonPayload)
+	m := &Manager{Paths: paths, Runner: &fakeRunner{}, Downloader: dl}
+
+	err := m.Install(context.Background(), validConfig())
+	if err == nil {
+		t.Fatal("expected error from malformed sidecar")
+	}
+	if !strings.Contains(err.Error(), "sha256 sidecar") {
+		t.Errorf("error %q; want it to mention `sha256 sidecar`", err)
+	}
+	if _, statErr := os.Stat(paths.BinaryDaemon); !os.IsNotExist(statErr) {
+		t.Errorf("daemon binary present after malformed-sidecar reject: stat err=%v", statErr)
+	}
+}
+
+func TestManagerInstallSHA256ValidInstallsBinary(t *testing.T) {
+	// Happy path pin: the auto-derived sidecar matches the
+	// payload, fetchAndVerify completes, and both binaries land
+	// on disk with mode 0755 and the exact bytes we scripted.
+	// This is the contract the live release workflow guarantees.
+	paths := newTestPaths(t)
+	daemonPayload := []byte("\x7fELF fake amneziawg-go body sha256-verified")
+	toolPayload := []byte("\x7fELF fake awg body sha256-verified")
+	dl := newFakeDL(daemonPayload, toolPayload)
+	m := &Manager{Paths: paths, Runner: &fakeRunner{}, Downloader: dl}
+
+	if err := m.Install(context.Background(), validConfig()); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	gotDaemon, err := os.ReadFile(paths.BinaryDaemon)
+	if err != nil {
+		t.Fatalf("read daemon: %v", err)
+	}
+	if !bytes.Equal(gotDaemon, daemonPayload) {
+		t.Errorf("daemon content mismatch: got %q, want %q", gotDaemon, daemonPayload)
+	}
+	gotTool, err := os.ReadFile(paths.BinaryTool)
+	if err != nil {
+		t.Fatalf("read tool: %v", err)
+	}
+	if !bytes.Equal(gotTool, toolPayload) {
+		t.Errorf("tool content mismatch: got %q, want %q", gotTool, toolPayload)
+	}
+	for _, p := range []string{paths.BinaryDaemon, paths.BinaryTool} {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("%s mode=%v; want 0755", p, info.Mode().Perm())
+		}
+	}
+}
+
+func TestParseSHA256LineAcceptsBothSha256SumFormats(t *testing.T) {
+	// `sha256sum -b file` writes "<hex> *file"; the default mode
+	// writes "<hex>  file" (two spaces). Pin both as accepted, plus
+	// a header-style file with a trailing newline. The parser
+	// must reject anything whose first whitespace-delimited
+	// token is not exactly 64 hex chars.
+	hex64 := strings.Repeat("a", 64)
+	cases := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"binary-mode", hex64 + "  amneziawg-go-linux-amd64\n", hex64, false},
+		{"text-mode", hex64 + " *amneziawg-go-linux-amd64\n", hex64, false},
+		{"no-filename", hex64 + "\n", hex64, false},
+		{"trailing-whitespace", "  " + hex64 + "  \n", hex64, false},
+		{"too-short", strings.Repeat("a", 63) + "  asset\n", "", true},
+		{"too-long", strings.Repeat("a", 65) + "  asset\n", "", true},
+		{"non-hex", strings.Repeat("z", 64) + "  asset\n", "", true},
+		{"html-404", "<html>404 Not Found</html>\n", "", true},
+		{"empty", "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseSHA256Line([]byte(tc.input))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("got %q, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q; want %q", got, tc.want)
+			}
+		})
 	}
 }
 
