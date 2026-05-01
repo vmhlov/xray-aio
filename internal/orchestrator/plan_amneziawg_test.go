@@ -26,6 +26,9 @@ func TestProfileNeedsAmneziaWG(t *testing.T) {
 	if !profileNeedsAmneziaWG("home-vpn") {
 		t.Error("home-vpn should need amneziawg")
 	}
+	if !profileNeedsAmneziaWG("home-vpn-mobile") {
+		t.Error("home-vpn-mobile should need amneziawg (full-stack profile)")
+	}
 	if profileNeedsAmneziaWG("home-stealth") {
 		t.Error("home-stealth should NOT need amneziawg")
 	}
@@ -45,6 +48,9 @@ func TestProfileNeedsXray(t *testing.T) {
 	}
 	if !profileNeedsXray("home-mobile") {
 		t.Error("home-mobile should need xray")
+	}
+	if !profileNeedsXray("home-vpn-mobile") {
+		t.Error("home-vpn-mobile should need xray (full-stack profile)")
 	}
 	if profileNeedsXray("home-vpn") {
 		t.Error("home-vpn should NOT need xray")
@@ -424,6 +430,103 @@ func TestInstallHomeVPNReinstallPreservesAmneziaWGKeys(t *testing.T) {
 	}
 	if post.ListenPort != 53999 {
 		t.Errorf("ListenPort override not honoured: got %d, want 53999", post.ListenPort)
+	}
+}
+
+// TestInstallHomeVPNMobileWiresAllFourTransports pins the contract
+// for ProfileHomeVPNMobile: a single Install call must drive
+// xray, naive, hysteria2, and amneziawg in that order, and the
+// rendered subscription bundle must carry one entry from each
+// (vless://, naive+https://, hysteria2://, and an AmneziaWG .conf
+// + QR pair). This is the "all four at once" sanity test that
+// keeps the new profile from regressing into a partial state by
+// silent omission.
+func TestInstallHomeVPNMobileWiresAllFourTransports(t *testing.T) {
+	// Intentionally not t.Parallel(): same env-var-on-StatePath
+	// constraint as TestInstallHomeVPNUsesNaiveAndAmneziaWGOnly.
+	rec := newRecordingTransports()
+	tmp := t.TempDir()
+	siteRoot := tmp + "/site"
+	res, err := Install(context.Background(), InstallOptions{
+		Profile:       "home-vpn-mobile",
+		Domain:        "vpn.example.com",
+		NaiveSiteRoot: siteRoot,
+	}, Deps{
+		Rand:         awgRand(31),
+		PreflightFn:  successfulPreflight,
+		NewTransport: rec.factory,
+		Now:          func() time.Time { return time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC) },
+		StatePath:    tmp + "/state.json",
+	})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	wantOrder := []string{"xray", "naive", "hysteria2", "amneziawg"}
+	if len(rec.installed) != len(wantOrder) {
+		t.Fatalf("install order: got %v, want %v", rec.installed, wantOrder)
+	}
+	for i, want := range wantOrder {
+		if rec.installed[i] != want {
+			t.Errorf("install order[%d]: got %q, want %q (full: %v)", i, rec.installed[i], want, rec.installed)
+		}
+	}
+
+	// All four state slots must be populated — none silently
+	// dropped because the profile is the union of two existing
+	// ones and the install loop iterates over Profile.Transports.
+	if res.State.Xray == nil {
+		t.Error("State.Xray nil for home-vpn-mobile")
+	}
+	if res.State.Naive == nil {
+		t.Error("State.Naive nil for home-vpn-mobile")
+	}
+	if res.State.Hysteria2 == nil {
+		t.Error("State.Hysteria2 nil for home-vpn-mobile")
+	}
+	if res.State.AmneziaWG == nil {
+		t.Error("State.AmneziaWG nil for home-vpn-mobile")
+	}
+
+	// Bundle: one URI per proxy-shaped transport plus one
+	// AmneziaWG entry. The HTML page surfaces all of these
+	// (page_test.go covers rendering); here we pin presence.
+	if len(res.Bundle.VLESSURIs) != 1 {
+		t.Errorf("Bundle.VLESSURIs: %v (want 1 entry)", res.Bundle.VLESSURIs)
+	}
+	if len(res.Bundle.NaiveURIs) != 1 {
+		t.Errorf("Bundle.NaiveURIs: %v (want 1 entry)", res.Bundle.NaiveURIs)
+	}
+	if len(res.Bundle.Hysteria2URIs) != 1 {
+		t.Errorf("Bundle.Hysteria2URIs: %v (want 1 entry)", res.Bundle.Hysteria2URIs)
+	}
+	if len(res.Bundle.AmneziaWGs) != 1 {
+		t.Fatalf("Bundle.AmneziaWGs: got %d, want 1", len(res.Bundle.AmneziaWGs))
+	}
+
+	// Bundle dir on disk: index.html + plain.txt for the proxy
+	// URIs + awg0.conf + awg0.png for the AmneziaWG client.
+	bundleDir := filepath.Join(siteRoot, "sub", res.State.Subscription.Token)
+	for _, name := range []string{"index.html", "plain.txt", "awg0.conf", "awg0.png"} {
+		fi, err := os.Stat(filepath.Join(bundleDir, name))
+		if err != nil {
+			t.Errorf("stat %s: %v", name, err)
+			continue
+		}
+		if fi.Size() == 0 {
+			t.Errorf("%s is empty", name)
+		}
+	}
+
+	plain, err := os.ReadFile(filepath.Join(bundleDir, "plain.txt"))
+	if err != nil {
+		t.Fatalf("read plain.txt: %v", err)
+	}
+	body := string(plain)
+	for _, scheme := range []string{"vless://", "naive+https://", "hysteria2://"} {
+		if !strings.Contains(body, scheme) {
+			t.Errorf("plain.txt missing %s; body:\n%s", scheme, body)
+		}
 	}
 }
 
