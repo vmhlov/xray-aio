@@ -97,7 +97,7 @@ func (m *Manager) Install(ctx context.Context, cfg Config) error {
 	if _, err := m.Runner.Run(ctx, "chown", "root:root", m.Paths.Config); err != nil {
 		return fmt.Errorf("chown config: %w", err)
 	}
-	if err := m.writeUnit(); err != nil {
+	if err := m.writeUnit(cfg); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
 	if _, err := m.Runner.Run(ctx, "systemctl", "daemon-reload"); err != nil {
@@ -187,10 +187,14 @@ func (m *Manager) writeConfig(cfg Config) error {
 	return writeFileAtomic(m.Paths.Config, []byte(body), 0o600)
 }
 
-func (m *Manager) writeUnit() error {
+func (m *Manager) writeUnit(cfg Config) error {
+	// Resolve defaults the same way Render does, so the unit and
+	// the rendered .conf agree on the server-side TUN CIDR.
+	resolved := cfg.resolvedDefaults()
 	unit := strings.ReplaceAll(systemdUnitTemplate, "{{DAEMON}}", m.Paths.BinaryDaemon)
 	unit = strings.ReplaceAll(unit, "{{TOOL}}", m.Paths.BinaryTool)
 	unit = strings.ReplaceAll(unit, "{{CONFIG}}", m.Paths.Config)
+	unit = strings.ReplaceAll(unit, "{{SERVER_ADDR}}", resolved.ServerAddress)
 	if err := os.MkdirAll(filepath.Dir(m.Paths.UnitFile), 0o755); err != nil {
 		return err
 	}
@@ -408,12 +412,24 @@ func writeFromReader(dst string, r io.Reader, mode os.FileMode) error {
 }
 
 // systemdUnitTemplate runs amneziawg-go in foreground mode (so
-// systemd can supervise it cleanly) and uses ExecStartPost hooks to
-// hand awg0.conf to `awg setconf`, raise the interface, and assign
-// the server-side address. ExecStop tears the interface down so
-// `systemctl restart` cleanly recreates it on the new config.
+// systemd can supervise it cleanly) and applies the awg0
+// configuration via three ordered ExecStartPost hooks:
 //
-// Why not awg-quick(8)? awg-quick wraps the same setup steps but
+//  1. `awg setconf` applies the cryptographic state (PrivateKey,
+//     ListenPort, peers, obfuscation). This MUST come from a wg(8)
+//     setconf-compatible file — it does NOT understand wg-quick
+//     directives like Address, DNS, MTU.
+//  2. `ip addr add {{SERVER_ADDR}} dev awg0` puts the server's TUN
+//     IP on the link. wg-quick conceptually does this for us; we
+//     do it ourselves because we render a wg setconf file (no
+//     Address line) and we don't ship the awg-quick wrapper.
+//  3. `ip link set up dev awg0` enables the link.
+//
+// ExecStop tears the interface down so `systemctl restart` cleanly
+// recreates it on the new config (no stale address conflicts on
+// re-install).
+//
+// Why not awg-quick(8)? awg-quick wraps these same setup steps but
 // expects to manage its own resolv.conf hooks (for the [Interface]
 // DNS line on the *peer* side, which makes sense for a client and
 // not for a server) and prefers to be run interactively. Hand-rolling
@@ -428,6 +444,7 @@ Wants=network-online.target
 Type=simple
 ExecStart={{DAEMON}} --foreground awg0
 ExecStartPost={{TOOL}} setconf awg0 {{CONFIG}}
+ExecStartPost=/sbin/ip addr add {{SERVER_ADDR}} dev awg0
 ExecStartPost=/sbin/ip link set up dev awg0
 ExecStop=/sbin/ip link del awg0
 Restart=on-failure

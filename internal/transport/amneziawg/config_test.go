@@ -30,9 +30,10 @@ func TestRenderServerGolden(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	want := "# Managed by xray-aio. Do not edit by hand — re-run `xray-aio install`.\n" +
+		"# Server address is applied by the systemd unit's `ip addr add` hook,\n" +
+		"# not by `awg setconf`, which rejects wg-quick directives.\n" +
 		"[Interface]\n" +
 		"PrivateKey = MEgVZ7zCJ7E0xWQp8oV5jU3aS1L9rBkPm2nQyXfA1Hk=\n" +
-		"Address = 10.66.66.1/24\n" +
 		"ListenPort = 51842\n" +
 		"Jc = 5\n" +
 		"Jmin = 50\n" +
@@ -80,13 +81,26 @@ func TestRenderServerOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
+	// Server-side render is fed to `awg setconf`, which rejects
+	// the wg-quick `Address` directive. The CIDR override flows
+	// to the systemd unit's `ip addr add` hook (covered by
+	// manager_test.go::TestManagerInstallUnit) and to AllowedIPs
+	// only via PeerAddress.
 	for _, want := range []string{
-		"Address = 10.99.0.1/24",
 		"ListenPort = 51999",
 		"AllowedIPs = 10.99.0.2/32",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in output, got:\n%s", want, got)
+		}
+	}
+	for _, banned := range []string{
+		"Address =",
+		"DNS =",
+		"MTU =",
+	} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("server render must omit wg-quick directive %q (rejected by `awg setconf`); got:\n%s", banned, got)
 		}
 	}
 }
