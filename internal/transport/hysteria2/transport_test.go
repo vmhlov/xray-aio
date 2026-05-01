@@ -72,6 +72,32 @@ func TestConfigFromOptionsHonoursOverrides(t *testing.T) {
 	}
 }
 
+func TestConfigFromOptionsMasqueradeInsecure(t *testing.T) {
+	cfg, err := configFromOptions(transport.Options{
+		Domain: "vpn.example.com",
+		Extra: map[string]any{
+			"hysteria2.password":            "p",
+			"hysteria2.masquerade_insecure": true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.MasqueradeInsecure {
+		t.Errorf("MasqueradeInsecure = false, want true")
+	}
+	cfg2, err := configFromOptions(transport.Options{
+		Domain: "vpn.example.com",
+		Extra:  map[string]any{"hysteria2.password": "p"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.MasqueradeInsecure {
+		t.Errorf("MasqueradeInsecure = true by default; want false (operator-pinned masquerade keeps verification)")
+	}
+}
+
 func TestConfigFromOptionsAcceptsNumericStrings(t *testing.T) {
 	cfg, err := configFromOptions(transport.Options{
 		Domain: "vpn.example.com",

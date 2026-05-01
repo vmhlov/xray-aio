@@ -364,6 +364,18 @@ func buildTransportOptions(name string, ps *ProfileState) (transport.Options, er
 		if ps.Hysteria2.MasqueradeURL != "" {
 			extra["hysteria2.masquerade_url"] = ps.Hysteria2.MasqueradeURL
 		}
+		// Skip TLS verification on the masquerade upstream when it's
+		// the default-style loopback selfsteal site. Caddy's site
+		// listener is bound to <Domain>:<SelfStealPort>, but hy2
+		// dials the upstream with SNI=127.0.0.1, so a verifying
+		// dialer fails the handshake and active probes get a bare
+		// 502 instead of the real selfsteal HTML — defeating the
+		// whole purpose of the masquerade. The skip applies to the
+		// loopback hop only; the public client→server hy2 leg
+		// remains cert-checked against Domain.
+		if strings.HasPrefix(ps.Hysteria2.MasqueradeURL, "https://127.0.0.1:") {
+			extra["hysteria2.masquerade_insecure"] = true
+		}
 		return transport.Options{
 			Domain: ps.Domain,
 			Email:  ps.Email,

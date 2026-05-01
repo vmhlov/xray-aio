@@ -86,6 +86,26 @@ masquerade:
 	}
 }
 
+// MasqueradeInsecure adds the `insecure: true` line under proxy. The
+// orchestrator turns this on for the loopback selfsteal upstream so
+// SNI=127.0.0.1 doesn't fail Caddy's strict-SNI check on :8443.
+// The line is absent by default — operators with a public masquerade
+// keep cert verification.
+func TestRenderEmitsMasqueradeInsecure(t *testing.T) {
+	cfg := Config{
+		Domain:             "vpn.example.com",
+		Password:           "s3cret",
+		MasqueradeInsecure: true,
+	}
+	got, err := Render(cfg)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(got, "    rewriteHost: true\n    insecure: true\n") {
+		t.Errorf("expected `insecure: true` directly under rewriteHost, got:\n%s", got)
+	}
+}
+
 func TestRenderHonoursOverrides(t *testing.T) {
 	cfg := Config{
 		Domain:        "vpn.example.com",
