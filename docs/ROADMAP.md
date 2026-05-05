@@ -27,11 +27,15 @@
 ## Phase 2 — расширение транспортов
 
 PR на каждый, изолированно:
-- 2.1 ✅`transport/hysteria2` — пакет (#17)
-- 2.1b ✅orchestrator-wiring — профиль `home-mobile` (REALITY+naive+selfsteal+hy2),
+- 2.1 ✅ `transport/hysteria2` — пакет (#17)
+- 2.1b ✅ orchestrator-wiring — профиль `home-mobile` (REALITY+naive+selfsteal+hy2),
   CLI-флаги `--hysteria2-port` / `--hysteria2-masquerade`, hy2:// URI в подписке
-- `transport/amneziawg`
-- `transport/mtproto` (вынос из autoXRAY/test/)
+- 2.2 ✅ `transport/amneziawg` — пакет + preflight + sha256-verified releases,
+  профиль `home-vpn-mobile` (REALITY+naive+hy2+AmneziaWG), .conf + QR в подписке (#26–#35)
+- 2.3 ✅ `transport/mtproto` — пакет telemt (Fake-TLS / EE-MTProxy),
+  sha256-verified binary из github.com/telemt/telemt, registry-registration
+- 2.3b `transport/mtproto` orchestrator-wiring — CLI-флаги, tg:// URI
+  в подписке, preflight-коллизии по :8883/TCP, профиль-включение
 - `transport/trojan`
 - `transport/shadowsocks` (опционально, как fallback)
 
